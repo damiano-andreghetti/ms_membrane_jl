@@ -27,20 +27,21 @@
       <item>meglio perché abbiamo reticolo approssimativamente esagonale
     </itemize-minus>
 
+    <item><with|font-shape|italic|salvare configurazioni> per vedere durante
+    la simulazione
+
+    <item><math|k=0> <with|font-shape|italic|fa la fase tubulare>?
+    [controllo]
+
+    <item><with|font-shape|italic|ottimizzazione> Julia
+
     <item>inserzione (dopo perché prima vogliamo capire se ci sono delle
     forze anche senza)
 
     <item>estrazione (dopo perché prima vogliamo capire se ci sono delle
     forze anche senza)
 
-    <item><with|font-shape|italic|salvare configurazioni> per vedere durante
-    la simulazione
-
     <item>scrivere Helfrich in vari modi discretizzati
-
-    <item><math|k=0> <with|font-shape|italic|fa la fase tubulare>?
-
-    <item>ottimizzazione Julia
   </itemize-minus>
 
   schema:
