@@ -38,7 +38,7 @@
 
     <item>scrivere Helfrich in vari modi discretizzati
 
-    <item><math|k=0> fa la fase tubulare?
+    <item><math|k=0> <with|font-shape|italic|fa la fase tubulare>?
 
     <item>ottimizzazione Julia
   </itemize-minus>
@@ -165,7 +165,16 @@
   </itemize-minus>
 
   <\bibliography|bib|alpha|/home/andrea/archivio/Archivio>
-    \;
+    <\bib-list|KKN87>
+      <bibitem*|KKN87><label|bib-KKN87>Yacov Kantor, Mehran Kardar, and
+      David<nbsp>R Nelson. <newblock>Tethered surfaces: Statics and dynamics.
+      <newblock><with|font-shape|italic|Physical Review A>, 35(7):3056, 1987.
+
+      <bibitem*|PB88><label|bib-PB88>Michael Plischke and David Boal.
+      <newblock>Absence of a crumpling transition in strongly self-avoiding
+      tethered membranes. <newblock><with|font-shape|italic|<pra>>,
+      38(9):4943\U4945, November 1988.
+    </bib-list>
   </bibliography>
 </body>
 
@@ -178,8 +187,10 @@
 <\references>
   <\collection>
     <associate|auto-1|<tuple|1|1>>
-    <associate|auto-2|<tuple|2|1>>
+    <associate|auto-2|<tuple|2|2>>
     <associate|auto-3|<tuple|<with|mode|<quote|math>|<rigid|->>|2>>
+    <associate|bib-KKN87|<tuple|KKN87|2>>
+    <associate|bib-PB88|<tuple|PB88|2>>
   </collection>
 </references>
 
@@ -195,6 +206,8 @@
       KKN87
 
       KKN87
+
+      NPW04
     </associate>
     <\associate|toc>
       <with|par-left|<quote|4tab>|28/10/22
