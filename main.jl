@@ -1,9 +1,7 @@
 #Dynamically Triangulated Monte Carlo in Julia 1.6.7
 #Packages Meshes,MeshViz,Makie (for plotting)
-#creation of triangulated sphere from icosahedral inspired by https://github.com/JanisErdmanis/LaplaceBIE.jl/blob/master/examples/sphere.jl
+#creation of triangulated sphere from icosahedral taken from by https://github.com/JanisErdmanis/LaplaceBIE.jl/blob/master/examples/sphere.jl
 #TODO
-#MC step for vertex
-#MC step for links
 #Listed-Link-Cell ?sistemare
 #parallelize MC sweep
 #prepare in SurfGeoQuant Nf1 and Nf2 (wrt to lower indexx vertex)
