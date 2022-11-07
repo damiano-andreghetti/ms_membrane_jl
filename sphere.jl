@@ -1,4 +1,5 @@
 using Meshes #requires Meshes package for perp4plot function
+using JLD
 #various function used for vector operations
 function norm(a::Vector{})
 	return sqrt(a[1]^2+a[2]^2+a[3]^2)
@@ -37,6 +38,7 @@ end
 #find center of each triangular face[A,B,C], call it O (O represent vector from origin to O)
 #evaluate cross product v=AB X AC, then dot(v,O)
 #if sign of this dot productt is positive then vertices are counter clockwise
+#WORKS ONLY IF ORIGIN IS INSIDE THE MESH
 function chechkcounterclock(vertices)
 	A=vertices[1]
 	B=vertices[2]
@@ -243,78 +245,6 @@ end
 
 #
 #
-#CellsGrid definition and related functions
-#
-#
-#struct for dividing simulation space in cells (to avoid O(N^2) MC sweep)
-struct CellsGrid
-	L::Number
-	Nx::Number
-	Ny::Number
-	Nz::Number
-	cells::Vector{Vector{Vector{Vector{Number}}}}
-	vertcell::Vector{Vector{Number}}
-end
-#function to generate cells, given a cube of side L centered in origin, it is divided into Nx by Ny by Nz cells
-function genCells(surf::TriSurface, Nx,Ny,Nz, L)
-	ver=reduce(vcat,transpose.(surf.vertices))
-	Lx=L/Nx
-	Ly=L/Ny
-	Lz=L/Nz
-	vertcell=[[0,0,0] for i in 1:(length(surf.vertices))] #vector of pointers for each particle to preceeding particle in same cell. -1 if no other particle
-	cells=[[[[] for k in 1:Nz] for j in 1:Ny] for i in 1:Nx] #vector of headers containing last particle inserted in each cell
-	ver=surf.vertices
-	for i in 1:length(ver)
-		cx, cy, cz= Int(floor((ver[i][1]+L*0.5)/Lx) + 1), Int(floor((ver[i][2]+L*0.5)/Ly) + 1), Int(floor((ver[i][3]+L*0.5)/Lz)+ 1)#floor division to find cartesian coordinates of cell
-		#println(cx,cy,cz)
-		push!(cells[cx][cy][cz], i)
-		vertcell[i]=[cx,cy,cz]
-	end
-	return CellsGrid(L, Nx,Ny,Nz,cells,vertcell)
-end
-#update cells after vertex move
-function update_cellsvm(ce::CellsGrid, i, xn)
-	filter!(e->e==i,ce.cells[ce.vertcell[i][1]][ce.vertcell[i][2]][ce.vertcell[i][3]])
-	L=ce.L
-	Nx=ce.Nx
-	Ny=ce.Ny
-	Nz=ce.Nz
-	Lx=L/Nx
-	Ly=L/Ny
-	Lz=L/Nz
-	cx, cy, cz= Int(floor((xn[1]+L*0.5)/Lx) + 1), Int(floor((xn[2]+L*0.5)/Ly) + 1), Int(floor((xn[3]+L*0.5)/Lz)+ 1)
-	push!(ce.cells[cx][cy][cz], i)
-	ce.vertcell[i]=[cx,cy,cz]
-	return ce
-end
-#returns vertices reasonably around i to check for overlapping
-function reasonablyaround(ce::CellsGrid, i)
-	ix=ce.vertcell[i][1]
-	iy=ce.vertcell[i][2]
-	iz=ce.vertcell[i][3]
-	rsn=ce.cells[ix][iy][iz]
-	#now include also neighbour cells
-	#use pbc for this
-	for vx in [-1,0,1]
-		for vy in [-1,0,1]
-			for vz in [-1, 0, 1]
-				nx=ix+vx
-				ny=iy+vy
-				nz=iz+vz
-				if (nx>=1 && nx <=ce.Nx) && (ny>=1 && ny <=ce.Ny) && (nz>=1 && nz <=ce.Nz)
-					vcat(rsn, ce.cells[nx][ny][nz])
-				end
-			end
-		end
-	end
-	rsn=collect(1:length(ce.vertcell))
-	rsn=union(rsn)
-	filter!(e->e≠i,rsn) #remove vertex i from this list
-	return rsn
-end
-
-#
-#
 #SurfGeoQuant definition and related functions
 #
 #
@@ -383,7 +313,7 @@ end
 #update surfgeoquant after vertex move
 function update_geoquantvm(su::SurfGeoQuant, i, xn)
 	#su2=SurfGeoQuant(su.Nv, su.vertices, su.faces, su.edges, su.neig, su.neig_faces, su.neig_edges, su.face_area, su.edge_faces, su.face_normals)
-	su2=deepcopy(su)
+	su2=su
 	su2.vertices[i]=xn
 	for f in su2.neig_faces[i]
 		ab=su2.vertices[su2.faces[f][1]].-su2.vertices[su2.faces[f][2]]
@@ -397,46 +327,80 @@ function update_geoquantvm(su::SurfGeoQuant, i, xn)
 end
 #update surfgeoquant after link move
 function update_geoquantlm(su::SurfGeoQuant, e)
-	#suppose check for overlapping and maximum edge length constrains has already been done
+	#suppose check for overlapping and maximum edge length constraints has already been done, also check for neighbour>=3 and no pyramidal structures
 	#su2=SurfGeoQuant(su.Nv, su.vertices, su.faces, su.edges, su.neig, su.neig_faces, su.neig_edges, su.face_area, su.edge_faces, su.face_normals)
-	su2=deepcopy(su)
-	t1,t2=su2.edge_faces[e][1],su2.edge_faces[e][2] #triangles (faces) sharing edge e
-	e1,e2=su2.edges[e][1],su2.edges[e][2]
-	ne1=filter(x -> (x!= e1 && x!= e2), su2.faces[t1])[1]
-	ne2=filter(x -> (x!= e1 && x!= e2), su2.faces[t2])[1]
-	#update edge
-	su2.edges[e]=[ne1,ne2]
-	#check for counterclockwise order and update faces
-	if chechkcounterclock([su2.vertices[e1], su2.vertices[ne1], su2.vertices[ne2]])
-		su2.faces[t1]=[e1, ne1, ne2]
-	else
-		su2.faces[t1]=[ne1, e1, ne2]
-	end 	
-	if chechkcounterclock([su2.vertices[e2], su2.vertices[ne2], su2.vertices[ne1]])
-		su2.faces[t2]=[e2, ne2, ne1]
-	else
-		su2.faces[t2]=[e2, ne1, ne2]
+	su2=su
+	t1,t2=su2.edge_faces[e][1],su2.edge_faces[e][2]
+	x=su2.faces[t1]
+	y=su2.faces[t2]
+    x_new=0
+    y_new=0            #x_new. y_new elements not contained in the edge, that will form new edge
+    x_ind=0 			#indices of first vertex forming old edge in x and second vertex forming old edge in y
+    y_ind=0
+    u=deepcopy(su2.faces[t1])
+	v=deepcopy(su2.faces[t2])
+    both=[]
+    for i in x
+        if i in y
+            push!(both, i)
+		end
 	end
+    for i in 1:length(x)
+        if x[i]== both[1]
+            x_ind=i
+		end
+        if !(x[i] in both)
+            x_new=x[i]
+		end
+	end
+    for j in 1:length(y)
+        if y[j]== both[2]
+            y_ind=j
+		end
+        if !(y[j] in both)
+            y_new=y[j]
+		end
+	end
+    u[x_ind]=y_new
+    v[y_ind]=x_new
+	#update egdes (keeping them like (i,j) with i<j)
+	if x_new<y_new
+		su2.edges[e]=[x_new,y_new]
+	else
+		su2.edges[e]=[y_new,x_new]
+	end
+	#update faces
+	su2.faces[t1]=u
+	su2.faces[t2]=v
 	#update neig
-	filter!(x -> x!=e2, su2.neig[e1])
-	filter!(x -> x!=e1, su2.neig[e2])
-	push!(su2.neig[ne2], ne1)
-	push!(su2.neig[ne1], ne2)
+	b1,b2=both[1],both[2]
+	filter!(x -> x!=b1, su2.neig[b2])
+	filter!(x -> x!=b2, su2.neig[b1])
+	push!(su2.neig[x_new], y_new)
+	push!(su2.neig[y_new], x_new)
 	#update neig faces
-	filter!(x -> x!=t1 && x!=t2, su2.neig_faces[e1])
-	filter!(x -> x!=t1 && x!=t2, su2.neig_faces[e2])
-	push!(su2.neig_faces[ne1], t1)
-	push!(su2.neig_faces[ne1], t2)
-	su2.neig_faces[ne1]=union(su2.neig_faces[ne1])
-	push!(su2.neig_faces[ne2], t1)
-	push!(su2.neig_faces[ne2], t2)	
-	su2.neig_faces[ne2]=union(su2.neig_faces[ne2])
-	#update neig eddges
-	filter!(x -> x!=e, su2.neig_edges[e1])
-	filter!(x -> x!=e, su2.neig_edges[e2])
-	push!(su2.neig_edges[ne1], e)
-	push!(su2.neig_edges[ne2], e)
-	#update face area and face normals
+	filter!(x -> x!=t1 && x!=t2, su2.neig_faces[b1])
+	filter!(x -> x!=t1 && x!=t2, su2.neig_faces[b2])
+	for f in [t1,t2]
+		if b1 in su2.faces[f]
+			push!(su2.neig_faces[b1], f)
+		end
+		if b2 in su2.faces[f]
+			push!(su2.neig_faces[b2], f)
+		end
+	end
+	push!(su2.neig_faces[x_new], t1)
+	push!(su2.neig_faces[x_new], t2)
+	su2.neig_faces[x_new]=union(su2.neig_faces[x_new])
+	push!(su2.neig_faces[y_new], t1)
+	push!(su2.neig_faces[y_new], t2)	
+	su2.neig_faces[y_new]=union(su2.neig_faces[y_new])
+	#update neig_edges
+	filter!(x -> x!=e, su2.neig_edges[b1])
+	filter!(x -> x!=e, su2.neig_edges[b2])
+	push!(su2.neig_edges[x_new], e)
+	push!(su2.neig_edges[y_new], e)
+	#update face area and normals
 	for f in [t1, t2]
 		ab=su2.vertices[su2.faces[f][1]].-su2.vertices[su2.faces[f][2]]
 		ac=su2.vertices[su2.faces[f][3]].-su2.vertices[su2.faces[f][2]]
@@ -446,24 +410,123 @@ function update_geoquantlm(su::SurfGeoQuant, e)
 		su2.face_normals[f]=facen
 	end
 	#update edge faces
-	#edge between e1 and e2 remains unchanged, and the same holds for e1-ne1 and e2-ne2 
-	edge_e1_ne2=0
-	for ed in su2.neig_edges[e1]
-		if su2.edges[ed][1]==ne2 || su2.edges[ed][2]==ne2
-			edge_e1_ne2=ed
+	for vert in union([u; v]) #for all involved vertices
+		for ed in su2.neig_edges[vert] #for all its neighbour edges
+			su2.edge_faces[ed]=[]
+			for f in 1:length(collect(su2.faces[su2.neig_faces[su2.edges[ed][1]][:]]))
+				if su2.edges[ed][1] in collect(su2.faces[su2.neig_faces[su2.edges[ed][1]][f]]) && su2.edges[ed][2] in collect(su2.faces[su2.neig_faces[su2.edges[ed][1]][f]])
+					push!(su2.edge_faces[ed], su2.neig_faces[su2.edges[ed][1]][f])
+				end
+			end
+			su2.edge_faces[ed]=union(su2.edge_faces[ed])
 		end
 	end
-	edge_e2_ne1=0
-	for ed in su2.neig_edges[e2]
-		if su2.edges[ed][1]==ne1 || su2.edges[ed][2]==ne1
-			edge_e2_ne1=ed
-		end
-	end
-	filter!(x -> x!=t2, su2.edge_faces[edge_e1_ne2])
-	push!(su2.edge_faces[edge_e1_ne2], t1)
-	filter!(x -> x!=t1, su2.edge_faces[edge_e2_ne1])
-	push!(su2.edge_faces[edge_e2_ne1], t2)
 	return su2
+end
+
+
+#
+#
+#CellsGrid definition and related functions
+#
+#
+#struct for dividing simulation space in cells (to avoid O(N^2) MC sweep)
+struct CellsGrid
+	L::Number
+	Nx::Number
+	Ny::Number
+	Nz::Number
+	cells::Vector{Vector{Vector{Vector{Number}}}}
+	vertcell::Vector{Vector{Number}}
+end
+#function to generate cells, given a cube of side L centered in origin, it is divided into Nx by Ny by Nz cells
+function genCells(surf::TriSurface, Nx,Ny,Nz, L)
+	ver=reduce(vcat,transpose.(surf.vertices))
+	Lx=L/Nx
+	Ly=L/Ny
+	Lz=L/Nz
+	vertcell=[[0,0,0] for i in 1:(length(surf.vertices))] #vector of pointers for each particle to preceeding particle in same cell. -1 if no other particle
+	cells=[[[[] for k in 1:Nz] for j in 1:Ny] for i in 1:Nx] #vector of headers containing last particle inserted in each cell
+	ver=surf.vertices
+	for i in 1:length(ver)
+		cx, cy, cz= Int(floor((ver[i][1]+L*0.5)/Lx) + 1), Int(floor((ver[i][2]+L*0.5)/Ly) + 1), Int(floor((ver[i][3]+L*0.5)/Lz)+ 1)#floor division to find cartesian coordinates of cell
+		#println(cx,cy,cz)
+		push!(cells[cx][cy][cz], i)
+		vertcell[i]=[cx,cy,cz]
+	end
+	return CellsGrid(L, Nx,Ny,Nz,cells,vertcell)
+end
+#same but for surfgeoquant
+function genCells(surf::SurfGeoQuant, Nx,Ny,Nz, L)
+	ver=reduce(vcat,transpose.(surf.vertices))
+	Lx=L/Nx
+	Ly=L/Ny
+	Lz=L/Nz
+	vertcell=[[0,0,0] for i in 1:(length(surf.vertices))] #vector of pointers for each particle to preceeding particle in same cell. -1 if no other particle
+	cells=[[[[] for k in 1:Nz] for j in 1:Ny] for i in 1:Nx] #vector of headers containing last particle inserted in each cell
+	ver=surf.vertices
+	for i in 1:length(ver)
+		cx, cy, cz= Int(floor((ver[i][1]+L*0.5)/Lx) + 1), Int(floor((ver[i][2]+L*0.5)/Ly) + 1), Int(floor((ver[i][3]+L*0.5)/Lz)+ 1)#floor division to find cartesian coordinates of cell
+		#println(cx,cy,cz)
+		push!(cells[cx][cy][cz], i)
+		vertcell[i]=[cx,cy,cz]
+	end
+	return CellsGrid(L, Nx,Ny,Nz,cells,vertcell)
+end
+#update cells after vertex move
+function update_cellsvm(ce::CellsGrid, i, xn)
+	filter!(e->e==i,ce.cells[ce.vertcell[i][1]][ce.vertcell[i][2]][ce.vertcell[i][3]])
+	L=ce.L
+	Nx=ce.Nx
+	Ny=ce.Ny
+	Nz=ce.Nz
+	Lx=L/Nx
+	Ly=L/Ny
+	Lz=L/Nz
+	cx, cy, cz= Int(floor((xn[1]+L*0.5)/Lx) + 1), Int(floor((xn[2]+L*0.5)/Ly) + 1), Int(floor((xn[3]+L*0.5)/Lz)+ 1)
+	push!(ce.cells[cx][cy][cz], i)
+	ce.vertcell[i]=[cx,cy,cz]
+	return ce
+end
+#returns vertices reasonably around i to check for overlapping
+function reasonablyaround(ce::CellsGrid, i)
+	ix=ce.vertcell[i][1]
+	iy=ce.vertcell[i][2]
+	iz=ce.vertcell[i][3]
+	rsn=ce.cells[ix][iy][iz]
+	#now include also neighbour cells
+	#use pbc for this
+	for vx in [-1,0,1]
+		for vy in [-1,0,1]
+			for vz in [-1, 0, 1]
+				nx=ix+vx
+				ny=iy+vy
+				nz=iz+vz
+				if (nx>=1 && nx <=ce.Nx) && (ny>=1 && ny <=ce.Ny) && (nz>=1 && nz <=ce.Nz)
+					vcat(rsn, ce.cells[nx][ny][nz])
+				end
+			end
+		end
+	end
+	rsn=collect(1:length(ce.vertcell))
+	rsn=union(rsn)
+	filter!(e->e≠i,rsn) #remove vertex i from this list
+	return rsn
+end
+
+#
+#
+#OTHER FUNCTIONS
+#
+#
+
+#save configuration to file
+function save_config(surf,filename)
+	save("mesh_snapshot/"*filename*".jld", "surf", surf)
+end
+#load configuration from file
+function load_config(filename)
+	return load(filename)["surf"]
 end
 
 #used just to prepare a Meshes.jl plot that can be plotted through makie

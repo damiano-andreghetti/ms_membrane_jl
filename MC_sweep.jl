@@ -73,12 +73,6 @@ function ev_energyonset(su::SurfGeoQuant, k, part, mu, set)
                     push!(ed2, su.faces[su.edge_faces[e][2]][((z+2)%3)+1])
 				end
 			end
-			if length(ed2)<2
-				println(ed1, ed2)
-				println(su.faces[su.edge_faces[e][2]])
-				println(e)
-				println(su.edges[e])
-			end
             if ed1[2]==ed2[1] #if they are already in counter clockwise order
                 Nf_1=su.face_normals[su.edge_faces[e][1]]
                 Nf_2=su.face_normals[su.edge_faces[e][2]]
@@ -124,7 +118,7 @@ function ev_envm(su::SurfGeoQuant, i, xn, k, part, mu)
 	Ein=ev_energyonset(su, k, part, mu, vcat(su.neig[i], [i]))
 	su2 = update_geoquantvm(su, i, xn)
 	Efin=ev_energyonset(su2,k,part,mu, vcat(su2.neig[i], [i]))
-	return Efin-Ein
+	return Efin-Ein, su2
 end
 
 function ev_enlm(su::SurfGeoQuant, e, k, part, mu)
@@ -134,10 +128,108 @@ function ev_enlm(su::SurfGeoQuant, e, k, part, mu)
 	Ein=ev_energyonset(su,k,part,mu,inv_ver)
 	su2 = update_geoquantlm(su, e)
 	Efin=ev_energyonset(su2,k,part,mu,inv_ver)
-	return Efin-Ein
+	return Efin-Ein, su2
 end
 
-function MC_sweep(surf::SurfGeoQuant, CELLS, sigma, max_edge_len, site_radius, k, part, mu, b)
+
+function MC_sweep(surf::SurfGeoQuant, CELLS, sigma, max_edge_len, site_radius, k, part, mu)
+	b=1.
+	#mc step for every vertex
+	vert_order=shuffle(collect(1:surf.Nv))
+	acc=0
+	for vert in vert_order
+		x0=deepcopy(surf.vertices[vert])
+		xn=x0.+((rand(3).-0.5)*2*sigma)
+		good=true
+		#check for max edge distance
+		for n in surf.neig[vert]
+			if good==false
+				break;
+			end
+			if distance(xn, surf.vertices[n])>max_edge_len
+				good=false
+			end
+			#distance(xn, surf.vertices[n])>max_edge_len && good==true ? good=false : good=true
+		end
+		if good
+			for i in reasonablyaround(CELLS, vert)
+				#println(distance(xn, surf.vertices[Int(i)]))
+				if good==false
+					break;
+				end
+				if distance(xn, surf.vertices[Int(i)])<2*site_radius
+					good=false
+				end
+			end
+		end
+		if good
+			DE, surf=ev_envm(surf, vert, xn, k, part, mu)
+			p=minimum([1., exp(-b*DE)])
+			if rand() < p
+				#accept
+				#surf.vertices[vert]=xn
+				#println("moved vertex ", vert)
+				#surf = update_geoquantvm(surf, vert, xn)
+				CELLS = update_cellsvm(CELLS, vert, xn)
+				acc+=1
+			else
+				#reject
+				surf = update_geoquantvm(surf, vert, x0)
+			end
+		end
+	end
+	println("acceptability for vertex move: " , acc/length(vert_order))
+	#mc step for links
+	acc=0
+	edge_order=shuffle(collect(1:length(surf.edges)))[1:surf.Nv]
+	for i in edge_order
+		t1,t2=surf.edge_faces[i][1],surf.edge_faces[i][2] #triangles (faces) sharing edge i
+		e1,e2=surf.edges[i][1],surf.edges[i][2]
+		ne1=filter(x -> (x!= e1 && x!= e2), surf.faces[t1])[1]
+		ne2=filter(x -> (x!= e1 && x!= e2), surf.faces[t2])[1]
+		good=true
+		#first check if flipping this edge still satisfies non overlapping and maximum edge length constraints
+		if 2*site_radius > distance(surf.vertices[ne1],surf.vertices[ne2]) || distance(surf.vertices[ne1],surf.vertices[ne2]) > max_edge_len
+			good=false
+			#println(distance(surf.vertices[ne1],surf.vertices[ne2]))
+		end
+		if length(surf.neig_edges[surf.edges[i][1]])-1<3 || length(surf.neig_edges[surf.edges[i][2]])-1<3
+			#println("doesnt satisfy edge conservation")
+			good=false
+		end
+		if ne1 in surf.neig[ne2]
+			#if edge already exist dont accept move (pyramidal structures)
+			good=false
+		end
+		if good
+			DE, surf=ev_enlm(surf, i, k, part, mu)
+			p=minimum([1., exp(-b*DE)])
+			if rand() < p
+				#accept
+				#surf = update_geoquantlm(surf, i)
+				acc+=1
+			else
+				#reject
+				surf = update_geoquantlm(surf, i)
+			end
+		end
+	end
+	println("acceptability for link move: ", acc/length(edge_order))
+	return surf
+end
+
+function Nsweeps(surf::SurfGeoQuant, CELLS, sigma, max_edge_len, site_radius, k, part, mu, N)
+	for i in 1:N
+		println("step ", i)
+		@time surf=MC_sweep(surf,CELLS,sigma,max_edge_len,site_radius,k,part,mu)
+		println(ev_energy(surf,k,part,mu))
+	end
+	return surf
+end
+
+#purely entropic MC sweeps (same as setting k=0, but here is optimized
+
+function MC_sweepPE(surf::SurfGeoQuant, CELLS, sigma, max_edge_len, site_radius)
 	#mc step for every vertex
 	vert_order=shuffle(collect(1:surf.Nv))
 	acc=0
@@ -167,18 +259,9 @@ function MC_sweep(surf::SurfGeoQuant, CELLS, sigma, max_edge_len, site_radius, k
 			end
 		end
 		if good
-			DE=ev_envm(surf, vert, xn, k, part, mu)
-			p=minimum([1., exp(-b*DE)])
-			if rand() < p
-				#accept
-				#surf.vertices[vert]=xn
-				#println("moved vertex ", vert)
 				surf = update_geoquantvm(surf, vert, xn)
 				CELLS = update_cellsvm(CELLS, vert, xn)
 				acc+=1
-			else
-				#reject
-			end
 		end
 	end
 	println("acceptability for vertex move: " , acc/length(vert_order))
@@ -200,26 +283,33 @@ function MC_sweep(surf::SurfGeoQuant, CELLS, sigma, max_edge_len, site_radius, k
 			#println("doesnt satisfy edge conservation")
 			good=false
 		end
+		if ne1 in surf.neig[ne2]
+			#if edge already exist dont accept move (pyramidal structures)
+			good=false
+		end
 		if good
-			DE=ev_enlm(surf, i, k, part, mu)
-			p=minimum([1., exp(-b*DE)])
-			if rand() < p
-				#accept
 				surf = update_geoquantlm(surf, i)
 				acc+=1
-			else
-				#reject
-			end
 		end
 	end
 	println("acceptability for link move: ", acc/length(edge_order))
 	return surf
 end
 
-function Nsweeps(surf::SurfGeoQuant, CELLS, sigma, max_edge_len, site_radius, k, part, mu, N, beta)
+function NsweepsPE(surf::SurfGeoQuant, CELLS, sigma, max_edge_len, site_radius, N, M, filename)
+	Rg=0
+	mes=[]
 	for i in 1:N
-		@time surf=MC_sweep(surf,CELLS,sigma,max_edge_len,site_radius,k,part,mu, beta)
-		println(ev_energy(surf,k,part,mu))
+		println("step ", i)
+		@time surf=MC_sweepPE(surf,CELLS,sigma,max_edge_len,site_radius)
+		Rg+=(sum([v[1]^2+v[2]^2+v[3]^2 for v in surf.vertices])/surf.Nv)
+		if i%M==0
+			println("square od radius of giration: ", Rg/M)
+			push!(mes, Rg/M)
+			Rg=0
+			save_config(surf, filename*"_step"*string(i))
+		end
 	end
-	return surf
+	return surf, mes
 end
+
