@@ -1,7 +1,7 @@
 using Meshes #requires Meshes package for perp4plot function
 using JLD
 #various function used for vector operations
-function norm(a::Vector{})
+function norm(a::Vector{Float64})
 	return sqrt(a[1]^2+a[2]^2+a[3]^2)
 end
 function normalize_vec(v)
@@ -11,22 +11,42 @@ function normalize_vec(v, L)
 	return v*L/norm(v)
 end
 function mpf(v1,v2)
-	nv=((v1.+v2)*0.5)
+	nv=((v1+v2)*0.5)
 	return nv/norm(nv)
 end
 function distance(a,b)
-	return norm(a.-b)
+	return norm(a-b)
 end	
-function cross_prod(a,b)
+#the following vector operations where implemented since seem to work faster than built-in functions
+function scalar_prod(a::Vector{Float64},b::Vector{Float64})
+	return a[1]*b[1]+a[2]*b[2]+a[3]*b[3]
+end
+function cross_prod(a::Vector{Float64},b::Vector{Float64})
 	return [a[2]*b[3]-a[3]b[2], a[3]b[1]-a[1]b[3], a[1]b[2]-a[2]b[1]]
 end
-function area(AB, AC)
+function sum_vec(a::Vector{Float64},b::Vector{Float64})
+	return [a[1]+b[1],a[2]+b[2],a[3]+b[3]]
+end
+function sub_vec(a::Vector{Float64},b::Vector{Float64})
+	return [a[1]-b[1],a[2]-b[2],a[3]-b[3]]
+end
+function area(AB::Vector{Float64}, AC::Vector{Float64})
 	return norm(cross_prod(AB, AC))*0.5
+end
+#the following is used for combining varous Se (with weighting) to Sv
+function weighted_sum(a::Array{Float64,2},w::Float64,b::Array{Float64,2})
+	c=zeros(Float64, 3, 3)
+	for i in 1:3
+		for j in 1:3
+			c[i,j]=a[i,j]+w*b[i,j]
+		end
+	end
+	return c
 end
 #tensor product between two vectors 
 #actually corresponds to outer product: results in a matrix A s.t. Aij=a_i*b_j
-function tensor_prod(a,b)
-	A=zeros(3,3)
+function tensor_prod(a::Vector{Float64},b::Vector{Float64})
+	A=zeros(Float64,3,3)
 	for i in 1:3
 		for j in 1:3
 			A[i,j]=a[i]*b[j]
@@ -43,11 +63,11 @@ function chechkcounterclock(vertices)
 	A=vertices[1]
 	B=vertices[2]
 	C=vertices[3]
-	O=A.+B
-	O=O.+C
+	O=A+B
+	O=O+C
 	O/=3
-	AB=B.-A
-	AC=C.-A
+	AB=B-A
+	AC=C-A
 	vect=cross_prod(AB,AC)
 	return Bool(sum(vect.*O)>0)
 end
@@ -251,19 +271,20 @@ end
 #struct for triangulated surface, but equipped with some geometrical quantities that will result useful for elastic energy calculation
 struct SurfGeoQuant
 	Nv::Int
-	vertices::Vector{Vector{Number}}
-	faces::Vector{Vector{Number}}
-	edges::Vector{Vector{Number}}
-	neig::Vector{Vector{Number}}
-	neig_faces::Vector{Vector{Number}} #faces around each vertex
-	neig_edges::Vector{Vector{Number}} #edges around each vertex
-	face_area::Vector{Number} #area of faces
-	edge_faces::Vector{Vector{Number}} #faces around each edge
-	face_normals::Vector{Vector{Number}} #face normals
+	vertices::Vector{Vector{Float64}}
+	faces::Vector{Vector{UInt16}}
+	edges::Vector{Vector{UInt16}}
+	neig::Vector{Vector{UInt16}}
+	neig_faces::Vector{Vector{UInt16}} #faces around each vertex
+	neig_edges::Vector{Vector{UInt16}} #edges around each vertex
+	face_area::Vector{Float64} #area of faces
+	edge_faces::Vector{Vector{UInt16}} #faces around each edge
+	face_normals::Vector{Vector{Float64}} #face normals
+	Se::Vector{Array{Float64}}
 end
 
 #define copy for surfgeoquant
-Base.deepcopy(su::SurfGeoQuant) = SurfGeoQuant(deepcopy(su.Nv), deepcopy(su.vertices), deepcopy(su.faces), deepcopy(su.edges), deepcopy(su.neig), deepcopy(su.neig_faces), deepcopy(su.neig_edges), deepcopy(su.face_area), deepcopy(su.edge_faces), deepcopy(su.face_normals))
+Base.deepcopy(su::SurfGeoQuant) = SurfGeoQuant(deepcopy(su.Nv), deepcopy(su.vertices), deepcopy(su.faces), deepcopy(su.edges), deepcopy(su.neig), deepcopy(su.neig_faces), deepcopy(su.neig_edges), deepcopy(su.face_area), deepcopy(su.edge_faces), deepcopy(su.face_normals),deepcopy(su.Se))
 #function used to equip a give TriSurface with its useful geometrical quantities
 function genGeoQuant(surf::TriSurface)
 	neig_faces=[[] for i in 1:surf.Nv]
@@ -274,8 +295,8 @@ function genGeoQuant(surf::TriSurface)
 		for vf in surf.faces[f]
 			push!(neig_faces[Int(vf)], f)
 		end
-		ab=surf.vertices[surf.faces[f][1]].-surf.vertices[surf.faces[f][2]]
-		ac=surf.vertices[surf.faces[f][3]].-surf.vertices[surf.faces[f][2]]
+		ab=surf.vertices[surf.faces[f][1]]-surf.vertices[surf.faces[f][2]]
+		ac=surf.vertices[surf.faces[f][3]]-surf.vertices[surf.faces[f][2]]
 		face_area[f]=area(ab,ac)
 		el=surf.faces[f]
 		sg1=[el[1],el[2]]
@@ -307,26 +328,103 @@ function genGeoQuant(surf::TriSurface)
 			end
 		end
 	end
-	
-	return SurfGeoQuant(deepcopy(surf.Nv), deepcopy(surf.vertices), deepcopy(surf.faces), edges, deepcopy(surf.neig), neig_faces, neig_edges, face_area, edge_faces, face_normals)
+	#compute dihedral angles
+	dihedral_angle=zeros(length(edges))
+	Se=[zeros(3,3) for i in 1:length(edges)]
+	for e in 1:length(edges)
+		n=edges[e][1]
+		j=edges[e][2] 
+		ed1=[] #TO FIND FACES IN COUNTERCLOCKWISE ORDER, S.T. DIHEDRAL ANGLE SIGN IS CORRECT (give cross product involved in a consistent order)
+        ed2=[]
+        for z in 1:3 #uses the fact that triangle indices are spatially in a counterclockwise order
+            if surf.faces[edge_faces[e][1]][z]==n #ed will be the two "border" vertices of the hexagon in counterclockwise order
+                push!(ed1, surf.faces[edge_faces[e][1]][((z+1)%3)+1])
+				push!(ed1, surf.faces[edge_faces[e][1]][((z+2)%3)+1])
+			end
+            if surf.faces[edge_faces[e][2]][z]==n
+                push!(ed2, surf.faces[edge_faces[e][2]][((z+1)%3)+1])                    
+                push!(ed2, surf.faces[edge_faces[e][2]][((z+2)%3)+1])
+			end
+		end
+        if ed1[2]==ed2[1] #if they are already in counter clockwise order
+            Nf_1=face_normals[edge_faces[e][1]]
+            Nf_2=face_normals[edge_faces[e][2]]
+        else #if not exchange them
+			Nf_1=face_normals[edge_faces[e][2]]
+            Nf_2=face_normals[edge_faces[e][1]]
+		end
+		re=surf.vertices[n]-surf.vertices[j]
+		Ne=sum_vec(Nf_1,Nf_2)
+		Ne/=norm(Ne)
+		be=cross_prod(re,Ne)
+		phi=sign(scalar_prod(cross_prod(Nf_1, Nf_2),re))*acos(scalar_prod(Nf_1,Nf_2))+pi
+		Se[e]=2*norm(re)*cos(phi/2)*(tensor_prod(be,be))
+	end
+	return SurfGeoQuant(deepcopy(surf.Nv), deepcopy(surf.vertices), deepcopy(surf.faces), edges, deepcopy(surf.neig), neig_faces, neig_edges, face_area, edge_faces, face_normals, Se)
 end
 #update surfgeoquant after vertex move
-function update_geoquantvm(su::SurfGeoQuant, i, xn)
+function update_geoquantvm(su::SurfGeoQuant, i, xn, maxang)
 	#su2=SurfGeoQuant(su.Nv, su.vertices, su.faces, su.edges, su.neig, su.neig_faces, su.neig_edges, su.face_area, su.edge_faces, su.face_normals)
 	su2=su
 	su2.vertices[i]=xn
 	for f in su2.neig_faces[i]
-		ab=su2.vertices[su2.faces[f][1]].-su2.vertices[su2.faces[f][2]]
-		ac=su2.vertices[su2.faces[f][3]].-su2.vertices[su2.faces[f][2]]
+		ab=sub_vec(su2.vertices[su2.faces[f][1]],su2.vertices[su2.faces[f][2]])
+		ac=sub_vec(su2.vertices[su2.faces[f][3]],su2.vertices[su2.faces[f][2]])
 		su2.face_area[f]=area(ab,ac)
 		facen=cross_prod(ab,ac)
 		facen/=norm(facen)
 		su2.face_normals[f]=facen
 	end
-	return su2
+	edgetoupdate=deepcopy(su2.neig_edges[i])
+	for j in su2.neig[i]
+		for ed in su2.neig_edges[j]
+			su2.edges[ed][1] == j ? other=su2.edges[ed][2] : other=su2.edges[ed][1]
+			if other in su2.edges[ed]
+				push!(edgetoupdate, ed)
+			end
+		end
+	end
+	good=true
+	Z3=zeros(Float64, 3, 3)
+	for e in edgetoupdate
+		n=su.edges[e][1]
+		j=su.edges[e][2]
+		ed1=[] #TO FIND FACES IN COUNTERCLOCKWISE ORDER, S.T. DIHEDRAL ANGLE SIGN IS CORRECT (give cross product involved in a consistent order)
+        ed2=[]
+        for z in 1:3 #uses the fact that triangle indices are spatially in a counterclockwise order
+            if su.faces[su.edge_faces[e][1]][z]==n #ed will be the two "border" vertices of the hexagon in counterclockwise order
+                push!(ed1, su.faces[su.edge_faces[e][1]][((z+1)%3)+1])
+				push!(ed1, su.faces[su.edge_faces[e][1]][((z+2)%3)+1])
+			end
+            if su.faces[su.edge_faces[e][2]][z]==n
+                push!(ed2, su.faces[su.edge_faces[e][2]][((z+1)%3)+1])                    
+                push!(ed2, su.faces[su.edge_faces[e][2]][((z+2)%3)+1])
+			end
+		end
+        if ed1[2]==ed2[1] #if they are already in counter clockwise order
+            Nf_1=su.face_normals[su.edge_faces[e][1]]
+            Nf_2=su.face_normals[su.edge_faces[e][2]]
+        else #if not exchange them
+			Nf_1=su.face_normals[su.edge_faces[e][2]]
+            Nf_2=su.face_normals[su.edge_faces[e][1]]
+		end
+		re=sub_vec(su.vertices[n],su.vertices[j])
+		phi=sign(scalar_prod(cross_prod(Nf_1, Nf_2),re))*acos(minimum([1.,scalar_prod(Nf_1,Nf_2)])) #minimum betweeen 1 and scalarProd(Nf1,Nf2) inserted due tu numerical errors
+		maxangrad=deg2rad(maxang)
+		if abs(phi) > maxangrad
+			good=false
+		else
+			phi+=pi
+			Ne=sum_vec(Nf_1,Nf_2)
+			Ne/=norm(Ne)
+			be=cross_prod(re,Ne)
+			su.Se[e]=weighted_sum(Z3,2.0*norm(re)*cos(phi/2),(tensor_prod(be,be)))
+		end
+	end
+	return su2, good
 end
 #update surfgeoquant after link move
-function update_geoquantlm(su::SurfGeoQuant, e)
+function update_geoquantlm(su::SurfGeoQuant, e, maxang)
 	#suppose check for overlapping and maximum edge length constraints has already been done, also check for neighbour>=3 and no pyramidal structures
 	#su2=SurfGeoQuant(su.Nv, su.vertices, su.faces, su.edges, su.neig, su.neig_faces, su.neig_edges, su.face_area, su.edge_faces, su.face_normals)
 	su2=su
@@ -402,8 +500,8 @@ function update_geoquantlm(su::SurfGeoQuant, e)
 	push!(su2.neig_edges[y_new], e)
 	#update face area and normals
 	for f in [t1, t2]
-		ab=su2.vertices[su2.faces[f][1]].-su2.vertices[su2.faces[f][2]]
-		ac=su2.vertices[su2.faces[f][3]].-su2.vertices[su2.faces[f][2]]
+		ab=su2.vertices[su2.faces[f][1]]-su2.vertices[su2.faces[f][2]]
+		ac=su2.vertices[su2.faces[f][3]]-su2.vertices[su2.faces[f][2]]
 		su2.face_area[f]=area(ab,ac)
 		facen=cross_prod(ab,ac)
 		facen/=norm(facen)
@@ -421,7 +519,42 @@ function update_geoquantlm(su::SurfGeoQuant, e)
 			su2.edge_faces[ed]=union(su2.edge_faces[ed])
 		end
 	end
-	return su2
+	#update dihedral_angle
+	n=su.edges[e][1]
+	j=su.edges[e][2]
+	ed1=[] #TO FIND FACES IN COUNTERCLOCKWISE ORDER, S.T. DIHEDRAL ANGLE SIGN IS CORRECT (give cross product involved in a consistent order)
+    ed2=[]
+    for z in 1:3 #uses the fact that triangle indices are spatially in a counterclockwise order
+        if su.faces[su.edge_faces[e][1]][z]==n #ed will be the two "border" vertices of the hexagon in counterclockwise order
+            push!(ed1, su.faces[su.edge_faces[e][1]][((z+1)%3)+1])
+			push!(ed1, su.faces[su.edge_faces[e][1]][((z+2)%3)+1])
+		end
+        if su.faces[su.edge_faces[e][2]][z]==n
+            push!(ed2, su.faces[su.edge_faces[e][2]][((z+1)%3)+1])                    
+            push!(ed2, su.faces[su.edge_faces[e][2]][((z+2)%3)+1])
+		end
+	end
+    if ed1[2]==ed2[1] #if they are already in counter clockwise order
+        Nf_1=su.face_normals[su.edge_faces[e][1]]
+        Nf_2=su.face_normals[su.edge_faces[e][2]]
+    else #if not exchange them
+		Nf_1=su.face_normals[su.edge_faces[e][2]]
+        Nf_2=su.face_normals[su.edge_faces[e][1]]
+	end
+	re=su.vertices[n]-su.vertices[j]
+	phi=sign(scalar_prod(cross_prod(Nf_1, Nf_2),re))*acos(minimum([1.,scalar_prod(Nf_1,Nf_2)]))
+	good=true
+	maxangrad=deg2rad(maxang)
+	if abs(phi) > maxangrad
+		good=false
+	else
+		phi+=pi
+		Ne=Nf_1+Nf_2
+		Ne/=norm(Ne)
+		be=cross_prod(re,Ne)
+		su.Se[e]=2*norm(re)*cos(phi/2)*(tensor_prod(be,be))
+	end
+	return su2, good
 end
 
 
@@ -432,12 +565,12 @@ end
 #
 #struct for dividing simulation space in cells (to avoid O(N^2) MC sweep)
 struct CellsGrid
-	L::Number
-	Nx::Number
-	Ny::Number
-	Nz::Number
-	cells::Vector{Vector{Vector{Vector{Number}}}}
-	vertcell::Vector{Vector{Number}}
+	L::Float16
+	Nx::UInt16
+	Ny::UInt16
+	Nz::UInt16
+	cells::Vector{Vector{Vector{Vector{UInt16}}}}
+	vertcell::Vector{Vector{UInt32}}
 end
 #function to generate cells, given a cube of side L centered in origin, it is divided into Nx by Ny by Nz cells
 function genCells(surf::TriSurface, Nx,Ny,Nz, L)
@@ -462,8 +595,8 @@ function genCells(surf::SurfGeoQuant, Nx,Ny,Nz, L)
 	Lx=L/Nx
 	Ly=L/Ny
 	Lz=L/Nz
-	vertcell=[[0,0,0] for i in 1:(length(surf.vertices))] #vector of pointers for each particle to preceeding particle in same cell. -1 if no other particle
-	cells=[[[[] for k in 1:Nz] for j in 1:Ny] for i in 1:Nx] #vector of headers containing last particle inserted in each cell
+	vertcell=[[0,0,0] for i in 1:(length(surf.vertices))] 
+	cells=[[[[] for k in 1:Nz] for j in 1:Ny] for i in 1:Nx] 
 	ver=surf.vertices
 	for i in 1:length(ver)
 		cx, cy, cz= Int(floor((ver[i][1]+L*0.5)/Lx) + 1), Int(floor((ver[i][2]+L*0.5)/Ly) + 1), Int(floor((ver[i][3]+L*0.5)/Lz)+ 1)#floor division to find cartesian coordinates of cell
@@ -475,7 +608,7 @@ function genCells(surf::SurfGeoQuant, Nx,Ny,Nz, L)
 end
 #update cells after vertex move
 function update_cellsvm(ce::CellsGrid, i, xn)
-	filter!(e->e==i,ce.cells[ce.vertcell[i][1]][ce.vertcell[i][2]][ce.vertcell[i][3]])
+	filter!(e->e!=i,ce.cells[ce.vertcell[i][1]][ce.vertcell[i][2]][ce.vertcell[i][3]])
 	L=ce.L
 	Nx=ce.Nx
 	Ny=ce.Ny
@@ -489,13 +622,17 @@ function update_cellsvm(ce::CellsGrid, i, xn)
 	return ce
 end
 #returns vertices reasonably around i to check for overlapping
-function reasonablyaround(ce::CellsGrid, i)
-	ix=ce.vertcell[i][1]
-	iy=ce.vertcell[i][2]
-	iz=ce.vertcell[i][3]
-	rsn=ce.cells[ix][iy][iz]
+function reasonablyaround(ce::CellsGrid, xn)
+	L=ce.L
+	Nx=ce.Nx
+	Ny=ce.Ny
+	Nz=ce.Nz
+	Lx=L/Nx
+	Ly=L/Ny
+	Lz=L/Nz
+	ix,iy,iz= Int(floor((xn[1]+L*0.5)/Lx) + 1), Int(floor((xn[2]+L*0.5)/Ly) + 1), Int(floor((xn[3]+L*0.5)/Lz)+ 1)#floor division to find cartesian coordinates of cell
+	rsn=deepcopy(ce.cells[ix][iy][iz])
 	#now include also neighbour cells
-	#use pbc for this
 	for vx in [-1,0,1]
 		for vy in [-1,0,1]
 			for vz in [-1, 0, 1]
@@ -503,14 +640,11 @@ function reasonablyaround(ce::CellsGrid, i)
 				ny=iy+vy
 				nz=iz+vz
 				if (nx>=1 && nx <=ce.Nx) && (ny>=1 && ny <=ce.Ny) && (nz>=1 && nz <=ce.Nz)
-					vcat(rsn, ce.cells[nx][ny][nz])
+					rsn=vcat(rsn, ce.cells[nx][ny][nz])
 				end
 			end
 		end
 	end
-	rsn=collect(1:length(ce.vertcell))
-	rsn=union(rsn)
-	filter!(e->e≠i,rsn) #remove vertex i from this list
 	return rsn
 end
 
@@ -524,11 +658,18 @@ end
 function save_config(surf,filename)
 	save("mesh_snapshot/"*filename*".jld", "surf", surf)
 end
+function save_config(surf,part,filename)
+	save("mesh_snapshot/"*filename*".jld", "surf", surf, "part", part)
+end
 #load configuration from file
 function load_config(filename)
-	return load(filename)["surf"]
+	l=load(filename)
+	if "part" in keys(l)
+		return l["surf"],l["part"]
+	else
+		return l["surf"]
+	end
 end
-
 #used just to prepare a Meshes.jl plot that can be plotted through makie
 function prep4plot(vertices, faces)
 	nv = Point3[(el[1],el[2],el[3]) for el in vertices]

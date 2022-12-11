@@ -1,6 +1,6 @@
 using Random
 include("sphere.jl") #requires TriSurface and CellsGrid definition
-I3=[1 0 0; 0 1 0; 0 0 1] #identity 3x3
+I3=[1. 0. 0.; 0. 1. 0.; 0. 0. 1.] #identity 3x3
 
 function eigenCv(C)
 	p=C[2,2]
@@ -30,17 +30,19 @@ function eigenCv(C)
 end
 
 function eigenHH(Sv, Nv)
-	x=[1,0,0]
-	wp=x.+Nv
-	wm=x.-Nv
-	if norm(wp)>=norm(wm)
-		wp/=norm(wp)
-		H=I3-2*tensor_prod(wp,wp)
+	x=[1.,0.,0.]
+	wp=sum_vec(x,Nv)
+	wm=sub_vec(x,Nv)
+	nwp=norm(wp)
+	nwm=norm(wm)
+	if nwp>=nwm
+		wp/=nwp
+		H=weighted_sum(I3,-2.,tensor_prod(wp,wp))
 	else
-		wm/=norm(wm)
-		H=I3-2*tensor_prod(wm,wm)
+		wm/=nwm
+		H=weighted_sum(I3,-2.,tensor_prod(wm,wm))
 	end
-	Cv=adjoint(H)*Sv*H
+	Cv=transpose(H)*Sv*H
 	c1,c2 = eigenCv(Cv)
 	return c1, c2
 end
@@ -53,54 +55,29 @@ function ev_energyonset(su::SurfGeoQuant, k, part, mu, set)
 		for nf in su.neig_faces[n]
 			af=su.face_area[nf]
 			Av+=af
-			Nv=Nv.+(su.face_normals[nf]*af)
+			Nv=sum_vec(Nv,(su.face_normals[nf]*af))
 		end
 		Nv/=norm(Nv)
 		Av/=3
 		Sv=zeros(3,3)
 		Pv=I3-tensor_prod(Nv,Nv)
 		for e in su.neig_edges[n]
-			su.edges[e][1] == n ? j=su.edges[e][2] : j=su.edges[e][1] # j = neighbour of i, with which edge e is in common
-			ed1=[] #TO FIND FACES IN COUNTERCLOCKWISE ORDER, S.T. DIHEDRAL ANGLE SIGN IS CORRECT (give cross product involved in a consistent order)
-            ed2=[]
-            for z in 1:3 #uses the fact that triangle indices are spatially in a counterclockwise order
-                if su.faces[su.edge_faces[e][1]][z]==n #ed will be the two "border" vertices of the hexagon in counterclockwise order
-                    push!(ed1, su.faces[su.edge_faces[e][1]][((z+1)%3)+1])
-					push!(ed1, su.faces[su.edge_faces[e][1]][((z+2)%3)+1])
-				end
-                if su.faces[su.edge_faces[e][2]][z]==n
-                    push!(ed2, su.faces[su.edge_faces[e][2]][((z+1)%3)+1])                    
-                    push!(ed2, su.faces[su.edge_faces[e][2]][((z+2)%3)+1])
-				end
-			end
-            if ed1[2]==ed2[1] #if they are already in counter clockwise order
-                Nf_1=su.face_normals[su.edge_faces[e][1]]
-                Nf_2=su.face_normals[su.edge_faces[e][2]]
-            else #if not exchange them
-				Nf_1=su.face_normals[su.edge_faces[e][2]]
-                Nf_2=su.face_normals[su.edge_faces[e][1]]
-			end
-			ae=0
-			if part[su.edge_faces[e][1]]==1
-				ae+=1
-			end
-			if part[su.edge_faces[e][2]]==1
-				ae+=1
-			end
-			Ne=Nf_1.+Nf_2
+			#su.edges[e][1] == n ? j=su.edges[e][2] : j=su.edges[e][1] # j = neighbour of i, with which edge e is in common
+			Ne=sum_vec(su.face_normals[su.edge_faces[e][2]],su.face_normals[su.edge_faces[e][1]])
 			Ne/=norm(Ne)
-			re=su.vertices[n].-su.vertices[j]
-			be=cross_prod(re/norm(re),Ne)
-			phi=sign(sum(cross_prod(Nf_1, Nf_2).*re))*acos(sum(Nf_1.*Nf_2))+pi 
-			he=2*norm(re)*cos(phi/2)
-			Se=(he-ae*mu)*tensor_prod(be,be) #MODIFY here to account for particles
-			We=sum(Nv.*Ne) #dot produtc between Nv and Ne
-			Sv+=(We*adjoint(Pv)*Se*Pv)
+			We=scalar_prod(Nv, Ne)
+			Sv=weighted_sum(Sv,We,su.Se[e])
 		end
+		Sv=transpose(Pv)*Sv*Pv
 		Sv/=Av
 		#Householder transformation used to evaluate Sv eigenvalues faster (test against LinearAlgebra.eigvals, is much faster
 		c1,c2=eigenHH(Sv, Nv)
-		E+=k*0.5*((c1+c2)^2)*Av
+		cm=(c1+c2)/2
+		lc=0 #local curvature
+		if part[n]==+1 #if a particle is present on vertex, then induce local curvature
+			lc=mu
+		end		
+		E+=(k)*0.5*((cm-lc)^2)*Av
 	end
 	return E
 end
@@ -113,33 +90,39 @@ end
 
 
 #evaluate energy difference in case of moving vertex i to new position xn (assumin this is an acceptable position)
-function ev_envm(su::SurfGeoQuant, i, xn, k, part, mu) 
+function ev_envm(su::SurfGeoQuant, i, xn, k, part, mu, maxang) 
 	#when vertex i is displaced to evaluate energy difference we need to evaluate change in curvatures for i and all his neighbours
 	Ein=ev_energyonset(su, k, part, mu, vcat(su.neig[i], [i]))
-	su2 = update_geoquantvm(su, i, xn)
+	su2, g = update_geoquantvm(su, i, xn, maxang)
+	if g==false
+		return 0, su2, g
+	end
 	Efin=ev_energyonset(su2,k,part,mu, vcat(su2.neig[i], [i]))
-	return Efin-Ein, su2
+	return Efin-Ein, su2, g
 end
 
-function ev_enlm(su::SurfGeoQuant, e, k, part, mu)
+function ev_enlm(su::SurfGeoQuant, e, k, part, mu, maxang)
 	t1,t2=su.edge_faces[e][1],su.edge_faces[e][2]
 	inv_ver=[su.faces[t1]; su.faces[t2]] #vertices involved whose energy will change, to concatenate two vectors a and b used [a; b]
 	union(inv_ver)
 	Ein=ev_energyonset(su,k,part,mu,inv_ver)
-	su2 = update_geoquantlm(su, e)
+	su2, g = update_geoquantlm(su, e, maxang)
+	if g==false
+		return 0, su2, g
+	end
 	Efin=ev_energyonset(su2,k,part,mu,inv_ver)
-	return Efin-Ein, su2
+	return Efin-Ein, su2, g
 end
 
-
-function MC_sweep(surf::SurfGeoQuant, CELLS, sigma, max_edge_len, site_radius, k, part, mu)
+#function MC sweep accounting for particles move
+function MC_sweepPM(surf::SurfGeoQuant, CELLS, sigma, max_edge_len, site_radius, k, part, mu, maxang,Nsvert, Nslink, Nspart; verbose=false)
 	b=1.
 	#mc step for every vertex
-	vert_order=shuffle(collect(1:surf.Nv))
 	acc=0
-	for vert in vert_order
+	for stepvertex in 1:Nsvert
+		vert=rand(collect(1:surf.Nv))
 		x0=deepcopy(surf.vertices[vert])
-		xn=x0.+((rand(3).-0.5)*2*sigma)
+		xn=sum_vec(x0,((rand(3).-0.5)*2*sigma))
 		good=true
 		#check for max edge distance
 		for n in surf.neig[vert]
@@ -151,21 +134,18 @@ function MC_sweep(surf::SurfGeoQuant, CELLS, sigma, max_edge_len, site_radius, k
 			end
 			#distance(xn, surf.vertices[n])>max_edge_len && good==true ? good=false : good=true
 		end
-		if good
-			for i in reasonablyaround(CELLS, vert)
-				#println(distance(xn, surf.vertices[Int(i)]))
-				if good==false
-					break;
-				end
-				if distance(xn, surf.vertices[Int(i)])<2*site_radius
+		if good #check for non overlapping of spheres
+			#println("vertex: ", vert, "reasonably around vertices are: ", reasonablyaround(CELLS, vert))
+			for i in reasonablyaround(CELLS,xn)
+				if i!=vert && distance(xn, surf.vertices[Int(i)])<2*site_radius
 					good=false
 				end
 			end
 		end
 		if good
-			DE, surf=ev_envm(surf, vert, xn, k, part, mu)
+			DE, surf, angcheck=ev_envm(surf, vert, xn, k, part, mu, maxang) #here is done also check for maximum dihedral angle
 			p=minimum([1., exp(-b*DE)])
-			if rand() < p
+			if rand() <p && angcheck 
 				#accept
 				#surf.vertices[vert]=xn
 				#println("moved vertex ", vert)
@@ -174,15 +154,17 @@ function MC_sweep(surf::SurfGeoQuant, CELLS, sigma, max_edge_len, site_radius, k
 				acc+=1
 			else
 				#reject
-				surf = update_geoquantvm(surf, vert, x0)
+				surf,  = update_geoquantvm(surf, vert, x0, maxang)
 			end
 		end
 	end
-	println("acceptability for vertex move: " , acc/length(vert_order))
+	if verbose
+		println("acceptability for vertex move: " , acc/Nsvert)
+	end
 	#mc step for links
 	acc=0
-	edge_order=shuffle(collect(1:length(surf.edges)))[1:surf.Nv]
-	for i in edge_order
+	for steplink in 1:Nslink
+		i=rand(1:length(surf.edges))
 		t1,t2=surf.edge_faces[i][1],surf.edge_faces[i][2] #triangles (faces) sharing edge i
 		e1,e2=surf.edges[i][1],surf.edges[i][2]
 		ne1=filter(x -> (x!= e1 && x!= e2), surf.faces[t1])[1]
@@ -202,114 +184,59 @@ function MC_sweep(surf::SurfGeoQuant, CELLS, sigma, max_edge_len, site_radius, k
 			good=false
 		end
 		if good
-			DE, surf=ev_enlm(surf, i, k, part, mu)
+			DE, surf, angcheck=ev_enlm(surf, i, k, part, mu, maxang) #here also check for maximum dihedral angle constraint
 			p=minimum([1., exp(-b*DE)])
-			if rand() < p
+			if angcheck && rand() < p
 				#accept
 				#surf = update_geoquantlm(surf, i)
 				acc+=1
 			else
 				#reject
-				surf = update_geoquantlm(surf, i)
+				surf, = update_geoquantlm(surf, i, maxang)
 			end
 		end
 	end
-	println("acceptability for link move: ", acc/length(edge_order))
-	return surf
+	if verbose
+		println("acceptability for link move: ", acc/Nslink)
+	end
+	acc=0
+	#MC sweep for particles
+	for steppart in 1:Nspart
+		v=rand(1:surf.Nv)
+		ov=deepcopy(part[v])
+		goto=rand(surf.neig[v])
+		ogoto=deepcopy(part[goto])
+		if ov!=ogoto #if they're equal, DeltaH=0 => tanh(0)=0 => reject always
+			Ein=ev_energyonset(surf,k,part,mu,[v,goto])
+			part[goto]=ov
+			part[v]=ogoto
+			Efin=ev_energyonset(surf,k,part,mu,[v,goto])
+			DE=Efin-Ein
+			p=minimum([1., exp(-b*DE)])
+			if rand() < p
+				#accept
+				acc+=1
+			else
+				#reject, undo particle switch
+				part[goto]=ogoto
+				part[v]=ov
+			end
+		end
+	end
+	if verbose
+		println("acceptability for particle move: ", acc/Nspart)
+	end
+	return surf, part
 end
 
-function Nsweeps(surf::SurfGeoQuant, CELLS, sigma, max_edge_len, site_radius, k, part, mu, N)
+function NsweepsPM(surf::SurfGeoQuant, CELLS, sigma, max_edge_len, site_radius, k, part, mu, Ki, Kd, g, N, filename="default", M=0,savecfg=false)
 	for i in 1:N
 		println("step ", i)
-		@time surf=MC_sweep(surf,CELLS,sigma,max_edge_len,site_radius,k,part,mu)
-		println(ev_energy(surf,k,part,mu))
-	end
-	return surf
-end
-
-#purely entropic MC sweeps (same as setting k=0, but here is optimized
-
-function MC_sweepPE(surf::SurfGeoQuant, CELLS, sigma, max_edge_len, site_radius)
-	#mc step for every vertex
-	vert_order=shuffle(collect(1:surf.Nv))
-	acc=0
-	for vert in vert_order
-		x0=copy(surf.vertices[vert])
-		xn=x0.+((rand(3).-0.5)*2*sigma)
-		good=true
-		#check for max edge distance
-		for n in surf.neig[vert]
-			if good==false
-				break;
-			end
-			if distance(xn, surf.vertices[n])>max_edge_len
-				good=false
-			end
-			#distance(xn, surf.vertices[n])>max_edge_len && good==true ? good=false : good=true
-		end
-		if good
-			for i in reasonablyaround(CELLS, vert)
-				#println(distance(xn, surf.vertices[Int(i)]))
-				if good==false
-					break;
-				end
-				if distance(xn, surf.vertices[Int(i)])<2*site_radius
-					good=false
-				end
-			end
-		end
-		if good
-				surf = update_geoquantvm(surf, vert, xn)
-				CELLS = update_cellsvm(CELLS, vert, xn)
-				acc+=1
+		@time surf, part=MC_sweepPM(surf,CELLS,sigma,max_edge_len,site_radius,k,part,mu, Ki, Kd, g)
+		if savecfg==true && i%M==0
+			save_config(surf, part, filename*"withparticles_step"*string(i))
 		end
 	end
-	println("acceptability for vertex move: " , acc/length(vert_order))
-	#mc step for links
-	acc=0
-	edge_order=shuffle(collect(1:length(surf.edges)))[1:surf.Nv]
-	for i in edge_order
-		t1,t2=surf.edge_faces[i][1],surf.edge_faces[i][2] #triangles (faces) sharing edge i
-		e1,e2=surf.edges[i][1],surf.edges[i][2]
-		ne1=filter(x -> (x!= e1 && x!= e2), surf.faces[t1])[1]
-		ne2=filter(x -> (x!= e1 && x!= e2), surf.faces[t2])[1]
-		good=true
-		#first check if flipping this edge still satisfies non overlapping and maximum edge length constraints
-		if 2*site_radius > distance(surf.vertices[ne1],surf.vertices[ne2]) || distance(surf.vertices[ne1],surf.vertices[ne2]) > max_edge_len
-			good=false
-			#println(distance(surf.vertices[ne1],surf.vertices[ne2]))
-		end
-		if length(surf.neig_edges[surf.edges[i][1]])-1<3 || length(surf.neig_edges[surf.edges[i][2]])-1<3
-			#println("doesnt satisfy edge conservation")
-			good=false
-		end
-		if ne1 in surf.neig[ne2]
-			#if edge already exist dont accept move (pyramidal structures)
-			good=false
-		end
-		if good
-				surf = update_geoquantlm(surf, i)
-				acc+=1
-		end
-	end
-	println("acceptability for link move: ", acc/length(edge_order))
-	return surf
-end
-
-function NsweepsPE(surf::SurfGeoQuant, CELLS, sigma, max_edge_len, site_radius, N, M, filename)
-	Rg=0
-	mes=[]
-	for i in 1:N
-		println("step ", i)
-		@time surf=MC_sweepPE(surf,CELLS,sigma,max_edge_len,site_radius)
-		Rg+=(sum([v[1]^2+v[2]^2+v[3]^2 for v in surf.vertices])/surf.Nv)
-		if i%M==0
-			println("square od radius of giration: ", Rg/M)
-			push!(mes, Rg/M)
-			Rg=0
-			save_config(surf, filename*"_step"*string(i))
-		end
-	end
-	return surf, mes
+	return surf, part
 end
 
