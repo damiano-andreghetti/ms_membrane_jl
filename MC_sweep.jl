@@ -1,4 +1,5 @@
 using Random
+Random.seed!(1234)
 include("sphere.jl") #requires TriSurface and CellsGrid definition
 I3=[1. 0. 0.; 0. 1. 0.; 0. 0. 1.] #identity 3x3
 
@@ -49,6 +50,11 @@ end
 
 function ev_energyonset(su::SurfGeoQuant, k, part, mu, set)
 	E=0
+	if 1 in set
+		open("myfile.txt", "a+") do io
+			println(io, "evaluating energy on a set of vertices with a particle, set=", set)
+		end
+	end
 	for n in set
 		Av=0
 		Nv=[0.,0.,0.]
@@ -71,12 +77,18 @@ function ev_energyonset(su::SurfGeoQuant, k, part, mu, set)
 		Sv=transpose(Pv)*Sv*Pv
 		Sv/=Av
 		#Householder transformation used to evaluate Sv eigenvalues faster (test against LinearAlgebra.eigvals, is much faster
-		c1,c2=eigenHH(Sv, Nv)
-		cm=(c1+c2)/2
+		#c1,c2=eigenHH(Sv, Nv)
+		#println(c1+c2)
+		#println(Sv[1,1]+Sv[2,2]+Sv[3,3])
+		#cm=(c1+c2)/2
+		cm=(Sv[1,1]+Sv[2,2]+Sv[3,3])/2
 		lc=0 #local curvature
 		if part[n]==+1 #if a particle is present on vertex, then induce local curvature
 			lc=mu
-		end		
+			open("myfile.txt", "a+") do io
+				println(io, "particle present, Hc=",cm, " H0=",lc," Hc-H0=",cm-lc," (Hc-H0)^2=", (cm-lc)^2, "energy for this vertex is=",(k)*0.5*((cm-lc)^2)*Av)
+			end
+		end
 		E+=(k)*0.5*((cm-lc)^2)*Av
 	end
 	return E
@@ -92,9 +104,17 @@ end
 #evaluate energy difference in case of moving vertex i to new position xn (assumin this is an acceptable position)
 function ev_envm(su::SurfGeoQuant, i, xn, k, part, mu, maxang) 
 	#when vertex i is displaced to evaluate energy difference we need to evaluate change in curvatures for i and all his neighbours
+	if part[i]==1
+		open("myfile.txt", "a+") do io
+			println(io, "evaluating energy change for a move of a vertex with a particle")
+		end
+	end
 	Ein=ev_energyonset(su, k, part, mu, vcat(su.neig[i], [i]))
 	su2, g = update_geoquantvm(su, i, xn, maxang)
 	if g==false
+		open("myfile.txt", "a+") do io
+			println(io, "dihedral angle constraint violated, vertex move interrupted")
+		end
 		return 0, su2, g
 	end
 	Efin=ev_energyonset(su2,k,part,mu, vcat(su2.neig[i], [i]))
