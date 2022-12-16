@@ -3,58 +3,38 @@ Random.seed!(1234)
 include("sphere.jl") #requires TriSurface and CellsGrid definition
 I3=[1. 0. 0.; 0. 1. 0.; 0. 0. 1.] #identity 3x3
 
-function eigenCv(C)
-	p=C[2,2]
-	q=C[2,3]
-	r=C[3,2]
-	s=C[3,3]
-	c1=0
-	c2=0
-	if r!=0 && q!=0
-		d=(s+p)^2-4*(p*s-r*q)
-		if d>0
-			c1=0.5*((s+p)+sqrt(d))
-			c2=0.5*((s+p)-sqrt(d))
-		else
-			c1=c2=(p+s)*0.5
-		end
-	else
-		if p>s
-			c1=p
-			c2=s
-		else
-			c1=s
-			c2=p
-		end
-	end
-	return c1, c2
-end
 
-function eigenHH(Sv, Nv)
-	x=[1.,0.,0.]
-	wp=sum_vec(x,Nv)
-	wm=sub_vec(x,Nv)
-	nwp=norm(wp)
-	nwm=norm(wm)
-	if nwp>=nwm
-		wp/=nwp
-		H=weighted_sum(I3,-2.,tensor_prod(wp,wp))
-	else
-		wm/=nwm
-		H=weighted_sum(I3,-2.,tensor_prod(wm,wm))
+function ev_curv(su::SurfGeoQuant,n)
+	Av=0
+	Nv=[0.,0.,0.]
+	for nf in su.neig_faces[n]
+		af=su.face_area[nf]
+		Av+=af
+		Nv=sum_vec(Nv,(su.face_normals[nf]*af))
 	end
-	Cv=transpose(H)*Sv*H
-	c1,c2 = eigenCv(Cv)
-	return c1, c2
+	Nv/=norm(Nv)
+	Av/=3
+	Sv=zeros(3,3)
+	Pv=I3-tensor_prod(Nv,Nv)
+	for e in su.neig_edges[n]
+		#su.edges[e][1] == n ? j=su.edges[e][2] : j=su.edges[e][1] # j = neighbour of i, with which edge e is in common
+		Ne=sum_vec(su.face_normals[su.edge_faces[e][2]],su.face_normals[su.edge_faces[e][1]])
+		Ne/=norm(Ne)
+		We=scalar_prod(Nv, Ne)
+		Sv=weighted_sum(Sv,We,su.Se[e])
+	end
+	Sv=Pv*Sv*Pv #notice that transpose(Pv)=Pv
+	Sv/=Av
+	cm=(Sv[1,1]+Sv[2,2]+Sv[3,3])/2
+	lc=0 #local curvature
+	if part[n]==+1 #if a particle is present on vertex, then induce local curvature
+		lc=mu
+	end
+	return cm
 end
 
 function ev_energyonset(su::SurfGeoQuant, k, part, mu, set)
 	E=0
-	if 1 in set
-		open("myfile.txt", "a+") do io
-			println(io, "evaluating energy on a set of vertices with a particle, set=", set)
-		end
-	end
 	for n in set
 		Av=0
 		Nv=[0.,0.,0.]
@@ -65,7 +45,8 @@ function ev_energyonset(su::SurfGeoQuant, k, part, mu, set)
 		end
 		Nv/=norm(Nv)
 		Av/=3
-		Sv=zeros(3,3)
+		#Sv=zeros(3,3)
+		Sv=Float64[0. 0. 0.;0. 0. 0.;0. 0. 0.]
 		Pv=I3-tensor_prod(Nv,Nv)
 		for e in su.neig_edges[n]
 			#su.edges[e][1] == n ? j=su.edges[e][2] : j=su.edges[e][1] # j = neighbour of i, with which edge e is in common
@@ -74,24 +55,20 @@ function ev_energyonset(su::SurfGeoQuant, k, part, mu, set)
 			We=scalar_prod(Nv, Ne)
 			Sv=weighted_sum(Sv,We,su.Se[e])
 		end
-		Sv=transpose(Pv)*Sv*Pv
-		Sv/=Av
+		Sv=Pv*Sv*Pv #notice that transpose(Pv)=Pv and Pv is made of real number => adjoint(Pv)=Pv
 		#Householder transformation used to evaluate Sv eigenvalues faster (test against LinearAlgebra.eigvals, is much faster
 		#c1,c2=eigenHH(Sv, Nv)
 		#println(c1+c2)
 		#println(Sv[1,1]+Sv[2,2]+Sv[3,3])
 		#cm=(c1+c2)/2
-		cm=(Sv[1,1]+Sv[2,2]+Sv[3,3])/2
+		cm=(Sv[1,1]+Sv[2,2]+Sv[3,3])/(2*Av)
 		lc=0 #local curvature
 		if part[n]==+1 #if a particle is present on vertex, then induce local curvature
 			lc=mu
-			open("myfile.txt", "a+") do io
-				println(io, "particle present, Hc=",cm, " H0=",lc," Hc-H0=",cm-lc," (Hc-H0)^2=", (cm-lc)^2, "energy for this vertex is=",(k)*0.5*((cm-lc)^2)*Av)
-			end
 		end
-		E+=(k)*0.5*((cm-lc)^2)*Av
+		E+=((cm-lc)^2)*Av
 	end
-	return E
+	return E*k*0.5
 end
 
 #function to evaluate total energy, OLD NEEDS TO BE FIXED
@@ -102,31 +79,20 @@ end
 
 
 #evaluate energy difference in case of moving vertex i to new position xn (assumin this is an acceptable position)
-function ev_envm(su::SurfGeoQuant, i, xn, k, part, mu, maxang) 
+function ev_envm(su::SurfGeoQuant, i, xn, k, part, mu) 
 	#when vertex i is displaced to evaluate energy difference we need to evaluate change in curvatures for i and all his neighbours
-	if part[i]==1
-		open("myfile.txt", "a+") do io
-			println(io, "evaluating energy change for a move of a vertex with a particle")
-		end
-	end
 	Ein=ev_energyonset(su, k, part, mu, vcat(su.neig[i], [i]))
-	su2, g = update_geoquantvm(su, i, xn, maxang)
-	if g==false
-		open("myfile.txt", "a+") do io
-			println(io, "dihedral angle constraint violated, vertex move interrupted")
-		end
-		return 0, su2, g
-	end
+	su2 = update_geoquantvm(su, i, xn)
 	Efin=ev_energyonset(su2,k,part,mu, vcat(su2.neig[i], [i]))
-	return Efin-Ein, su2, g
+	return Efin-Ein, su2
 end
 
-function ev_enlm(su::SurfGeoQuant, e, k, part, mu, maxang)
+function ev_enlm(su::SurfGeoQuant, e, k, part, mu)
 	t1,t2=su.edge_faces[e][1],su.edge_faces[e][2]
 	inv_ver=[su.faces[t1]; su.faces[t2]] #vertices involved whose energy will change, to concatenate two vectors a and b used [a; b]
-	union(inv_ver)
+	inv_ver=union(inv_ver)
 	Ein=ev_energyonset(su,k,part,mu,inv_ver)
-	su2, g = update_geoquantlm(su, e, maxang)
+	su2, g = update_geoquantlm(su, e)
 	if g==false
 		return 0, su2, g
 	end
@@ -135,7 +101,7 @@ function ev_enlm(su::SurfGeoQuant, e, k, part, mu, maxang)
 end
 
 #function MC sweep accounting for particles move
-function MC_sweepPM(surf::SurfGeoQuant, CELLS, sigma, max_edge_len, site_radius, k, part, mu, maxang,Nsvert, Nslink, Nspart; verbose=false)
+function MC_sweepPM(surf::SurfGeoQuant, CELLS, sigma, max_edge_len, site_radius, k, part, mu,Nsvert, Nslink, Nspart; verbose=false)
 	b=1.
 	#mc step for every vertex
 	acc=0
@@ -163,9 +129,9 @@ function MC_sweepPM(surf::SurfGeoQuant, CELLS, sigma, max_edge_len, site_radius,
 			end
 		end
 		if good
-			DE, surf, angcheck=ev_envm(surf, vert, xn, k, part, mu, maxang) #here is done also check for maximum dihedral angle
+			DE, surf=ev_envm(surf, vert, xn, k, part, mu) #here is done also check for maximum dihedral angle
 			p=minimum([1., exp(-b*DE)])
-			if rand() <p && angcheck 
+			if rand() <p
 				#accept
 				#surf.vertices[vert]=xn
 				#println("moved vertex ", vert)
@@ -174,7 +140,7 @@ function MC_sweepPM(surf::SurfGeoQuant, CELLS, sigma, max_edge_len, site_radius,
 				acc+=1
 			else
 				#reject
-				surf,  = update_geoquantvm(surf, vert, x0, maxang)
+				surf = update_geoquantvm(surf, vert, x0)
 			end
 		end
 	end
@@ -190,29 +156,24 @@ function MC_sweepPM(surf::SurfGeoQuant, CELLS, sigma, max_edge_len, site_radius,
 		ne1=filter(x -> (x!= e1 && x!= e2), surf.faces[t1])[1]
 		ne2=filter(x -> (x!= e1 && x!= e2), surf.faces[t2])[1]
 		good=true
-		#first check if flipping this edge still satisfies non overlapping and maximum edge length constraints
-		if 2*site_radius > distance(surf.vertices[ne1],surf.vertices[ne2]) || distance(surf.vertices[ne1],surf.vertices[ne2]) > max_edge_len
-			good=false
-			#println(distance(surf.vertices[ne1],surf.vertices[ne2]))
-		end
-		if length(surf.neig_edges[surf.edges[i][1]])-1<3 || length(surf.neig_edges[surf.edges[i][2]])-1<3
-			#println("doesnt satisfy edge conservation")
+		#first check if flipping this edge still satisfies maximum edge length constraints
+		if distance(surf.vertices[ne1],surf.vertices[ne2]) > max_edge_len
 			good=false
 		end
-		if ne1 in surf.neig[ne2]
-			#if edge already exist dont accept move (pyramidal structures)
-			good=false
-		end
+		#check for pyramidal structures and edge conservation will be done inside update_geoquantlm() funciton
 		if good
-			DE, surf, angcheck=ev_enlm(surf, i, k, part, mu, maxang) #here also check for maximum dihedral angle constraint
-			p=minimum([1., exp(-b*DE)])
-			if angcheck && rand() < p
-				#accept
-				#surf = update_geoquantlm(surf, i)
-				acc+=1
+			DE, surf, check=ev_enlm(surf, i, k, part, mu) #here also check for pyramidal structures and edge conservation
+			if check
+				p=minimum([1., exp(-b*DE)])
+				if rand()<p
+					#accept
+					acc+=1
+				else
+					#reject and restore previous configuration
+					surf, = update_geoquantlm(surf, i)
+				end
 			else
-				#reject
-				surf, = update_geoquantlm(surf, i, maxang)
+				#reject without doing nothing
 			end
 		end
 	end
@@ -226,7 +187,7 @@ function MC_sweepPM(surf::SurfGeoQuant, CELLS, sigma, max_edge_len, site_radius,
 		ov=deepcopy(part[v])
 		goto=rand(surf.neig[v])
 		ogoto=deepcopy(part[goto])
-		if ov!=ogoto #if they're equal, DeltaH=0 => tanh(0)=0 => reject always
+		if ov!=ogoto #if they're equal, DeltaH=0 => accept always
 			Ein=ev_energyonset(surf,k,part,mu,[v,goto])
 			part[goto]=ov
 			part[v]=ogoto
@@ -235,6 +196,7 @@ function MC_sweepPM(surf::SurfGeoQuant, CELLS, sigma, max_edge_len, site_radius,
 			p=minimum([1., exp(-b*DE)])
 			if rand() < p
 				#accept
+				println("accepted particle move with DE=", DE)
 				acc+=1
 			else
 				#reject, undo particle switch
