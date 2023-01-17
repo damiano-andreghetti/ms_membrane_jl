@@ -1,6 +1,10 @@
 using Meshes #requires Meshes package for perp4plot function
 using JLD
+using StaticArrays
 #various function used for vector operations
+function norm(a::MVector{3,Float64})
+	return sqrt(a[1]^2+a[2]^2+a[3]^2)
+end
 function norm(a::Vector{Float64})
 	return sqrt(a[1]^2+a[2]^2+a[3]^2)
 end
@@ -14,39 +18,47 @@ function mpf(v1,v2)
 	nv=((v1+v2)*0.5)
 	return nv/norm(nv)
 end
-function distance(a,b)
+function distance(a::Vector{Float64},b::Vector{Float64})
+	return norm(a-b)
+end	
+function distance(a::MVector{3,Float64},b::MVector{3,Float64})
 	return norm(a-b)
 end	
 #the following vector operations where implemented since seem to work faster than built-in functions
 function scalar_prod(a::Vector{Float64},b::Vector{Float64})
 	return a[1]*b[1]+a[2]*b[2]+a[3]*b[3]
 end
+function scalar_prod(a::MVector{3,Float64},b::MVector{3,Float64})
+	return a[1]*b[1]+a[2]*b[2]+a[3]*b[3]
+end
 function cross_prod(a::Vector{Float64},b::Vector{Float64})
 	return [a[2]*b[3]-a[3]b[2], a[3]b[1]-a[1]b[3], a[1]b[2]-a[2]b[1]]
+end
+function cross_prod(a::MVector{3,Float64},b::MVector{3,Float64})
+	return MVector{3,Float64}(a[2]*b[3]-a[3]b[2], a[3]b[1]-a[1]b[3], a[1]b[2]-a[2]b[1])
 end
 function sum_vec(a::Vector{Float64},b::Vector{Float64})
 	return [a[1]+b[1],a[2]+b[2],a[3]+b[3]]
 end
-function sub_vec(a::Vector{Float64},b::Vector{Float64})
-	return [a[1]-b[1],a[2]-b[2],a[3]-b[3]]
+function area(AB::MVector{3,Float64}, AC::MVector{3,Float64})
+	return norm(cross_prod(AB, AC))*0.5
 end
 function area(AB::Vector{Float64}, AC::Vector{Float64})
 	return norm(cross_prod(AB, AC))*0.5
 end
-#the following is used for combining varous Se (with weighting) to Sv
-function weighted_sum(a::Array{Float64,2},w::Float64,b::Array{Float64,2})
-	c=Array{Float64,2}(undef,3,3)
-	for i in 1:3
-		for j in 1:3
-			c[i,j]=a[i,j]+w*b[i,j]
-		end
-	end
-	return c
-end
 #tensor product between two vectors 
 #actually corresponds to outer product: results in a matrix A s.t. Aij=a_i*b_j
 function tensor_prod(a::Vector{Float64},b::Vector{Float64})
-	A=Array{Float64,2}(undef,3,3)
+	A=MMatrix{3,3,Float64}(undef)
+	for i in 1:3
+		for j in 1:3
+			A[i,j]=a[i]*b[j]
+		end
+	end
+	return A
+end
+function tensor_prod(a::MVector{3,Float64},b::MVector{3,Float64})
+	A=MMatrix{3,3,Float64}(1.,1.,1.,1.,1.,1.,1.,1.,1.)
 	for i in 1:3
 		for j in 1:3
 			A[i,j]=a[i]*b[j]
@@ -279,16 +291,16 @@ end
 #struct for triangulated surface, but equipped with some geometrical quantities that will result useful for elastic energy calculation
 struct SurfGeoQuant
 	Nv::Int
-	vertices::Vector{Vector{Float64}}
-	faces::Vector{Vector{Int16}}
-	edges::Vector{Vector{Int16}}
+	vertices::Vector{MVector{3,Float64}}
+	faces::Vector{MVector{3,Int16}}
+	edges::Vector{MVector{2,Int16}}
 	neig::Vector{Vector{Int16}}
 	neig_faces::Vector{Vector{Int16}} #faces around each vertex
 	neig_edges::Vector{Vector{Int16}} #edges around each vertex
 	face_area::Vector{Float64} #area of faces
 	edge_faces::Vector{Vector{Int16}} #faces around each edge
-	face_normals::Vector{Vector{Float64}} #face normals
-	Se::Vector{Array{Float64}}
+	face_normals::Vector{MVector{3,Float64}} #face normals
+	Se::Vector{MMatrix{3,3,Float64}}
 end
 
 #define copy for surfgeoquant
@@ -361,8 +373,10 @@ function genGeoQuant(surf::TriSurface)
 			Nf_1=face_normals[edge_faces[e][2]]
             Nf_2=face_normals[edge_faces[e][1]]
 		end
-		re=sub_vec(surf.vertices[j],surf.vertices[n])
-		Ne=sum_vec(Nf_1,Nf_2)
+		re=surf.vertices[j]-surf.vertices[n]
+		#re=sub_vec(surf.vertices[j],surf.vertices[n])
+		Ne=Nf_1.+Nf_2
+		#Ne=sum_vec(Nf_1,Nf_2)
 		Ne/=norm(Ne)
 		be=cross_prod(re,Ne)
 		phi=sign(scalar_prod(cross_prod(Nf_1, Nf_2),re))*acos(scalar_prod(Nf_1,Nf_2))+pi
@@ -371,17 +385,17 @@ function genGeoQuant(surf::TriSurface)
 	return SurfGeoQuant(deepcopy(surf.Nv), deepcopy(surf.vertices), deepcopy(surf.faces), edges, deepcopy(surf.neig), neig_faces, neig_edges, face_area, edge_faces, face_normals, Se)
 end
 #update surfgeoquant after vertex move
-function update_geoquantvm(su::SurfGeoQuant, i, xn)
+function update_geoquantvm(su::SurfGeoQuant, i::Int16, xn::MVector{3,Float64})
 	#su2=SurfGeoQuant(su.Nv, su.vertices, su.faces, su.edges, su.neig, su.neig_faces, su.neig_edges, su.face_area, su.edge_faces, su.face_normals)
 	su2=su
 	su2.vertices[i]=xn
 	for f in su2.neig_faces[i]
-		ab=sub_vec(su2.vertices[su2.faces[f][1]],su2.vertices[su2.faces[f][2]])
-		ac=sub_vec(su2.vertices[su2.faces[f][3]],su2.vertices[su2.faces[f][2]])
-		su2.face_area[f]=area(ab,ac)
-		facen=cross_prod(ab,ac)
-		facen/=norm(facen)
-		su2.face_normals[f]=facen
+		ab=su2.vertices[su2.faces[f][1]]-su2.vertices[su2.faces[f][2]]
+		ac=su2.vertices[su2.faces[f][3]]-su2.vertices[su2.faces[f][2]]
+		cprod=cross_prod(ab,ac)
+		ncp=norm(cprod)
+		su2.face_area[f]=ncp*0.5
+		su2.face_normals[f]=(cprod/ncp)
 	end
 	edgetoupdate=deepcopy(su2.neig_edges[i])
 	for j in su2.neig[i]
@@ -392,21 +406,19 @@ function update_geoquantvm(su::SurfGeoQuant, i, xn)
 			end
 		end
 	end
-	good=true
-	Z3=zeros(Float64, 3, 3)
+	ed1=Int16[0,0] #TO FIND FACES IN COUNTERCLOCKWISE ORDER, S.T. DIHEDRAL ANGLE SIGN IS CORRECT (give cross product involved in a consistent order)
+    ed2=Int16[0,0]
 	for e in edgetoupdate
 		n=su.edges[e][1]
 		j=su.edges[e][2]
-		ed1=[] #TO FIND FACES IN COUNTERCLOCKWISE ORDER, S.T. DIHEDRAL ANGLE SIGN IS CORRECT (give cross product involved in a consistent order)
-        ed2=[]
         for z in 1:3 #uses the fact that triangle indices are spatially in a counterclockwise order
 			if su.faces[su.edge_faces[e][1]][z]==n #ed will be the two "border" vertices of the hexagon in counterclockwise order
-				push!(ed1, su.faces[su.edge_faces[e][1]][PBC3(z+1)])
-				push!(ed1, su.faces[su.edge_faces[e][1]][PBC3(z+2)])
+				ed1[1]=su.faces[su.edge_faces[e][1]][PBC3(z+1)]
+				ed1[2]=su.faces[su.edge_faces[e][1]][PBC3(z+2)]
 			end
 			if su.faces[su.edge_faces[e][2]][z]==n
-				push!(ed2, su.faces[su.edge_faces[e][2]][PBC3(z+1)])  
-				push!(ed2, su.faces[su.edge_faces[e][2]][PBC3(z+2)])
+				ed2[1]=su.faces[su.edge_faces[e][2]][PBC3(z+1)]
+				ed2[2]=su.faces[su.edge_faces[e][2]][PBC3(z+2)]
 			end
 		end
         if ed1[2]==ed2[1] #if they are already in counter clockwise order
@@ -416,30 +428,34 @@ function update_geoquantvm(su::SurfGeoQuant, i, xn)
 			Nf_1=su.face_normals[su.edge_faces[e][2]]
             Nf_2=su.face_normals[su.edge_faces[e][1]]
 		end
-		re=sub_vec(su.vertices[j],su.vertices[n])
-		phi=sign(scalar_prod(cross_prod(Nf_1, Nf_2),re))*acos(minimum([1.,scalar_prod(Nf_1,Nf_2)]))+pi #minimum betweeen 1 and scalarProd(Nf1,Nf2) inserted due tu numerical errors
-		Ne=sum_vec(Nf_1,Nf_2)
+		re=su.vertices[j]-su.vertices[n]
+		#re=sub_vec(su.vertices[j],su.vertices[n])
+		sp=scalar_prod(Nf_1,Nf_2)
+		sp > 1.  || sp < -1. ? sp = sign(sp) : sp = sp
+		phi=sign(scalar_prod(cross_prod(Nf_1, Nf_2),re))*acos(sp)+pi #minimum betweeen 1 and scalarProd(Nf1,Nf2) inserted due tu numerical errors
+		Ne=Nf_1.+Nf_2
+		#Ne=sum_vec(Nf_1,Nf_2)
 		Ne/=norm(Ne)
 		be=cross_prod(re,Ne)
-		su.Se[e]=weighted_sum(Z3,2.0*norm(re)*cos(phi/2),(tensor_prod(be,be)))
+		su.Se[e]=2.0*norm(re)*cos(phi/2)*tensor_prod(be,be)
 	end
 	return su2
 end
 #update surfgeoquant after link move
-function update_geoquantlm(su::SurfGeoQuant, e)
+function update_geoquantlm(su::SurfGeoQuant, e::Int16, set::Vector{Int16})
 	#suppose check for overlapping and maximum edge length constraints has already been done, also check for neighbour>=3 and no pyramidal structures
 	#su2=SurfGeoQuant(su.Nv, su.vertices, su.faces, su.edges, su.neig, su.neig_faces, su.neig_edges, su.face_area, su.edge_faces, su.face_normals)
 	su2=su
 	t1,t2=su2.edge_faces[e][1],su2.edge_faces[e][2]
 	x=su2.faces[t1]
 	y=su2.faces[t2]
-    x_new=0
-    y_new=0            #x_new. y_new elements not contained in the edge, that will form new edge
-    x_ind=0 			#indices of first vertex forming old edge in x and second vertex forming old edge in y
-    y_ind=0
+    x_new::Int16=0
+    y_new::Int16=0            #x_new. y_new elements not contained in the edge, that will form new edge
+    x_ind::Int16=0 			#indices of first vertex forming old edge in x and second vertex forming old edge in y
+    y_ind::Int16=0
     u=deepcopy(su2.faces[t1])
 	v=deepcopy(su2.faces[t2])
-    both=[]
+    both=Int16[]
     for i in x
         if i in y
             push!(both, i)
@@ -461,32 +477,6 @@ function update_geoquantlm(su::SurfGeoQuant, e)
             y_new=y[j]
 		end
 	end
-	n=su.edges[e][1]
-	j=su.edges[e][2]
-	ed1=[] #TO FIND FACES IN COUNTERCLOCKWISE ORDER, S.T. DIHEDRAL ANGLE SIGN IS CORRECT (give cross product involved in a consistent order)
-    ed2=[]
-    for z in 1:3 #uses the fact that triangle indices are spatially in a counterclockwise order
-        if su.faces[su.edge_faces[e][1]][z]==n #ed will be the two "border" vertices of the hexagon in counterclockwise order
-            push!(ed1, su.faces[su.edge_faces[e][1]][PBC3(z+1)])
-			push!(ed1, su.faces[su.edge_faces[e][1]][PBC3(z+2)])
-		end
-        if su.faces[su.edge_faces[e][2]][z]==n
-            push!(ed2, su.faces[su.edge_faces[e][2]][PBC3(z+1)])  
-            push!(ed2, su.faces[su.edge_faces[e][2]][PBC3(z+2)])
-		end
-	end
-    if ed1[2]==ed2[1] #if they are already in counter clockwise order
-        Nf_1=su.face_normals[su.edge_faces[e][1]]
-        Nf_2=su.face_normals[su.edge_faces[e][2]]
-    else #if not exchange them
-		Nf_1=su.face_normals[su.edge_faces[e][2]]
-        Nf_2=su.face_normals[su.edge_faces[e][1]]
-	end
-	re=sub_vec(su.vertices[j],su.vertices[n])
-	phi=sign(scalar_prod(cross_prod(Nf_1, Nf_2),re))*acos(minimum([1.,scalar_prod(Nf_1,Nf_2)]))+pi
-	Ne=Nf_1+Nf_2
-	Ne/=norm(Ne)
-	be=cross_prod(re,Ne)
     u[x_ind]=y_new
     v[y_ind]=x_new
 	#check for pyramidal structures (if edge already exists we end up with the same face 2 times), and also for edge conservation 
@@ -519,12 +509,16 @@ function update_geoquantlm(su::SurfGeoQuant, e)
 			push!(su2.neig_faces[b2], f)
 		end
 	end
-	push!(su2.neig_faces[x_new], t1)
-	push!(su2.neig_faces[x_new], t2)
-	su2.neig_faces[x_new]=union(su2.neig_faces[x_new])
-	push!(su2.neig_faces[y_new], t1)
-	push!(su2.neig_faces[y_new], t2)	
-	su2.neig_faces[y_new]=union(su2.neig_faces[y_new])
+	if t1 in su2.neig_faces[x_new]
+		push!(su2.neig_faces[x_new], t2)
+	else
+		push!(su2.neig_faces[x_new], t1)
+	end
+	if t1 in su2.neig_faces[y_new]
+		push!(su2.neig_faces[y_new], t2)
+	else
+		push!(su2.neig_faces[y_new], t1)
+	end
 	#update neig_edges
 	filter!(x -> x!=e, su2.neig_edges[b1])
 	filter!(x -> x!=e, su2.neig_edges[b2])
@@ -534,36 +528,37 @@ function update_geoquantlm(su::SurfGeoQuant, e)
 	for f in [t1, t2]
 		ab=su2.vertices[su2.faces[f][1]]-su2.vertices[su2.faces[f][2]]
 		ac=su2.vertices[su2.faces[f][3]]-su2.vertices[su2.faces[f][2]]
-		su2.face_area[f]=area(ab,ac)
-		facen=cross_prod(ab,ac)
-		facen/=norm(facen)
-		su2.face_normals[f]=facen
+		cprod=cross_prod(ab,ac)
+		ncp=norm(cprod)
+		su2.face_area[f]=ncp*0.5
+		su2.face_normals[f]=(cprod/ncp)
 	end
 	#update edge faces
-	for vert in union([u; v]) #for all involved vertices
+	for vert in set #for all involved vertices
 		for ed in su2.neig_edges[vert] #for all its neighbour edges
-			su2.edge_faces[ed]=[]
-			for f in 1:length(collect(su2.faces[su2.neig_faces[su2.edges[ed][1]][:]]))
-				if su2.edges[ed][1] in collect(su2.faces[su2.neig_faces[su2.edges[ed][1]][f]]) && su2.edges[ed][2] in collect(su2.faces[su2.neig_faces[su2.edges[ed][1]][f]])
+			su2.edge_faces[ed]=Vector{Int16}[]
+			arr=su2.neig_faces[su2.edges[ed][1]]
+			for f in 1:length(arr)
+				if su2.edges[ed][1] in su2.faces[arr[f]] && su2.edges[ed][2] in su2.faces[arr[f]]
 					push!(su2.edge_faces[ed], su2.neig_faces[su2.edges[ed][1]][f])
 				end
 			end
-			su2.edge_faces[ed]=union(su2.edge_faces[ed])
+			#su2.edge_faces[ed]=union(su2.edge_faces[ed]) #this is useless?
 		end
 	end
 	#update dihedral_angle and edge shape operator
 	n=su.edges[e][1]
 	j=su.edges[e][2]
-	ed1=[] #TO FIND FACES IN COUNTERCLOCKWISE ORDER, S.T. DIHEDRAL ANGLE SIGN IS CORRECT (give cross product involved in a consistent order)
-    ed2=[]
+	ed1=[0,0] #TO FIND FACES IN COUNTERCLOCKWISE ORDER, S.T. DIHEDRAL ANGLE SIGN IS CORRECT (give cross product involved in a consistent order)
+    ed2=[0,0]
     for z in 1:3 #uses the fact that triangle indices are spatially in a counterclockwise order
-        if su.faces[su.edge_faces[e][1]][z]==n #ed will be the two "border" vertices of the hexagon in counterclockwise order
-            push!(ed1, su.faces[su.edge_faces[e][1]][PBC3(z+1)])
-			push!(ed1, su.faces[su.edge_faces[e][1]][PBC3(z+2)])
+		if su.faces[su.edge_faces[e][1]][z]==n #ed will be the two "border" vertices of the hexagon in counterclockwise order
+			ed1[1]=su.faces[su.edge_faces[e][1]][PBC3(z+1)]
+			ed1[2]=su.faces[su.edge_faces[e][1]][PBC3(z+2)]
 		end
-        if su.faces[su.edge_faces[e][2]][z]==n
-            push!(ed2, su.faces[su.edge_faces[e][2]][PBC3(z+1)])  
-            push!(ed2, su.faces[su.edge_faces[e][2]][PBC3(z+2)])
+		if su.faces[su.edge_faces[e][2]][z]==n
+			ed2[1]=su.faces[su.edge_faces[e][2]][PBC3(z+1)]
+			ed2[2]=su.faces[su.edge_faces[e][2]][PBC3(z+2)]
 		end
 	end
     if ed1[2]==ed2[1] #if they are already in counter clockwise order
@@ -573,12 +568,56 @@ function update_geoquantlm(su::SurfGeoQuant, e)
 		Nf_1=su.face_normals[su.edge_faces[e][2]]
         Nf_2=su.face_normals[su.edge_faces[e][1]]
 	end
-	re=sub_vec(su.vertices[j],su.vertices[n])
-	phi=sign(scalar_prod(cross_prod(Nf_1, Nf_2),re))*acos(minimum([1.,scalar_prod(Nf_1,Nf_2)]))+pi
-	Ne=Nf_1+Nf_2
+	re=su.vertices[j]-su.vertices[n]
+	sp=scalar_prod(Nf_1,Nf_2)
+	sp > 1.  || sp < -1. ? sp = sign(sp) : sp = sp
+	phi=sign(scalar_prod(cross_prod(Nf_1, Nf_2),re))*acos(sp)+pi
+	Ne=Nf_1.+Nf_2
 	Ne/=norm(Ne)
 	be=cross_prod(re,Ne)
 	su.Se[e]=2*norm(re)*cos(phi/2)*(tensor_prod(be,be))
+	edgetoupdate=[]
+	for edge in su.neig_edges[x_new]
+		if b1 in su.edges[edge] || b2 in su.edges[edge]
+			push!(edgetoupdate,edge)
+		end
+	end
+	for edge in su.neig_edges[y_new]
+		if b1 in su.edges[edge] || b2 in su.edges[edge]
+			push!(edgetoupdate,edge)
+		end
+	end
+	for edge in edgetoupdate
+		n=su.edges[edge][1]
+		j=su.edges[edge][2]
+		ed1=[0,0] #TO FIND FACES IN COUNTERCLOCKWISE ORDER, S.T. DIHEDRAL ANGLE SIGN IS CORRECT (give cross product involved in a consistent order)
+		ed2=[0,0]
+		for z in 1:3 #uses the fact that triangle indices are spatially in a counterclockwise order
+			if su.faces[su.edge_faces[edge][1]][z]==n #ed will be the two "border" vertices of the hexagon in counterclockwise order
+				ed1[1]=su.faces[su.edge_faces[edge][1]][PBC3(z+1)]
+				ed1[2]=su.faces[su.edge_faces[edge][1]][PBC3(z+2)]
+			end
+			if su.faces[su.edge_faces[edge][2]][z]==n
+				ed2[1]=su.faces[su.edge_faces[edge][2]][PBC3(z+1)]
+				ed2[2]=su.faces[su.edge_faces[edge][2]][PBC3(z+2)]
+			end
+		end
+		if ed1[2]==ed2[1] #if they are already in counter clockwise order
+			Nf_1=su.face_normals[su.edge_faces[edge][1]]
+			Nf_2=su.face_normals[su.edge_faces[edge][2]]
+		else #if not exchange them
+			Nf_1=su.face_normals[su.edge_faces[edge][2]]
+			Nf_2=su.face_normals[su.edge_faces[edge][1]]
+		end
+		re=su.vertices[j]-su.vertices[n]
+		sp=scalar_prod(Nf_1,Nf_2)
+		sp > 1.  || sp < -1. ? sp = sign(sp) : sp = sp
+		phi=sign(scalar_prod(cross_prod(Nf_1, Nf_2),re))*acos(sp)+pi
+		Ne=Nf_1+Nf_2
+		Ne/=norm(Ne)
+		be=cross_prod(re,Ne)
+		su.Se[edge]=2*norm(re)*cos(phi/2)*(tensor_prod(be,be))
+	end
 	return su2, true
 end
 
@@ -647,7 +686,7 @@ function update_cellsvm(ce::CellsGrid, i, xn)
 	return ce
 end
 #returns vertices reasonably around i to check for overlapping
-function reasonablyaround(ce::CellsGrid, xn)
+function reasonablyaround(ce::CellsGrid, xn::MVector{3,Float64})
 	L=ce.L
 	Nx=ce.Nx
 	Ny=ce.Ny
@@ -675,16 +714,106 @@ end
 
 #
 #
+#FUNCTION TO FIND CLUSTERS OF PARTICLES
+#
+#
+
+function find_clusters(su::SurfGeoQuant, part)
+	labels=[]
+	for i in 1:su.Nv
+		if part[i]==1
+			push!(labels,i)
+		else
+			push!(labels,-1)
+		end
+	end
+	for i in 1:su.Nv
+		if part[i]==1
+			for j in su.neig[i]
+				if part[j]==1
+					labels[j]=labels[i]
+				end
+			end
+		end
+	end
+	clust=[]
+	complab=[]
+	clustind=[]
+	cc=1
+	for i in 1:su.Nv
+		if part[i]==1 && !(labels[i] in complab)
+			push!(clust, [i])
+			push!(complab, labels[i])
+			push!(clustind, cc)
+			cc+=1
+		elseif part[i]==1 && labels[i] in complab
+			push!(clust[clustind[findall(x->x==labels[i],complab)[1]]], i)
+		end
+	end
+	return clust
+end
+
+
+
+#
+#
 #OTHER FUNCTIONS
 #
 #
 
+#evaluate volume of a mesh
+
+function gyr_rad(sgq::SurfGeoQuant)
+	Rg=0
+	for i in 1:sgq.Nv
+		for j in i:sgq.Nv
+			d=distance(sgq.vertices[i],sgq.vertices[j])
+			Rg+=(d^2)
+		end
+	end
+	return Rg/(sgq.Nv^2)
+end
+
+function evaluate_volume(sgq::SurfGeoQuant)
+	V=0
+	O=[0., 0.,0.] #point outside the mesh
+	for f in sgq.faces
+		A,B,C=sgq.vertices[f[1]],sgq.vertices[f[2]],sgq.vertices[f[3]]
+		AB=sub_vec(B,A)
+		AC=sub_vec(C,A)
+		AO=sub_vec(O,A)
+		V+=(1/6)*(scalar_prod(cross_prod(AB,AC),AO))
+	end
+	return abs(V)
+end
+
+function evaluate_volume(sgq::SurfGeoQuant, fac)
+	V=0
+	v0=1.63671
+	O=[0., 0.,0.] #point outside the mesh
+	for fi in fac
+		f=sgq.faces[fi]
+		"""
+		A,B,C=sgq.vertices[f[1]],sgq.vertices[f[2]],sgq.vertices[f[3]]
+		AB=sub_vec(B,A)
+		AC=sub_vec(C,A)
+		AO=sub_vec(O,A)
+		vi=(1/6)*(scalar_prod(cross_prod(AB,AC),AO))
+		"""
+		AO=sub_vec(O,sgq.vertices[f[1]])
+		vi=scalar_prod(sgq.face_normals[fi],AO)*2*sgq.face_area[fi]/6 #is this faster?
+		V+=((vi-v0)/v0)^2
+	end
+	return abs(V)
+end
+
+
 #save configuration to file
 function save_config(surf,filename)
-	save("mesh_snapshot/"*filename*".jld", "surf", surf)
+	save(filename*".jld", "surf", surf)
 end
 function save_config(surf,part,filename)
-	save("mesh_snapshot/"*filename*".jld", "surf", surf, "part", part)
+	save(filename*".jld", "surf", surf, "part", part)
 end
 #load configuration from file
 function load_config(filename)
