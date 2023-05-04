@@ -6,4 +6,5 @@ We have:
 3) Insertion: particles are inserted with probability $k_I$ in empty sites
 4) Extraction: clusters of particles of size $\geq N_e$ are removed with probability 1
 \
+
 Notice that moves 3 and 4 bring the system out of equilibrium towards a stationary state.
